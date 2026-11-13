@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import math
 
-from ai.score_auditor import ScoreAuditor
 from json_types import JSONObject, JSONValue
 from logic.score_card import ScoreCard
+from logic.scorer import Scorer
 
 
-class StressScorer(ScoreAuditor):
+class StressScorer(Scorer):
     """Scores the 11 answers and audits Gemini's arithmetic.
 
     Score: the mean of the 11 answers on the 1–5 stress scale, equal
