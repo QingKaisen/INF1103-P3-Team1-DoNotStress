@@ -539,6 +539,86 @@ def test_support_priority_and_safety_together_do_not_repeat_tips():
     assert result["support_priority"] is True
 
 
+def test_manager_runs_rules_polymorphically_and_can_drop_one():
+    """The refinement is in use, and the rule list can change on its own.
+
+    1. LogicManager is a BaseManager. Its default rules are the four v3
+       subclasses, and the test holds them only as BusinessRule (Liskov).
+    2. Open/closed: a manager built with only TipCapRule does not add the
+       sleep tip. evaluate() was not edited to switch that off; the list
+       passed in was shorter.
+    3. analyse_trend reads a StressHistory that storage owns. The manager
+       does not own those records (association). Here the later score is
+       lower, so the comparison is LOWER and the change is -0.8.
+    """
+    from base_manager import BaseManager
+    from logic.business_rule import BusinessRule
+    from logic.tip_cap_rule import TipCapRule
+    from logic.trend import Trend
+    from records.check_in_record import CheckInRecord
+    from records.stress_history import StressHistory
+
+    manager = lm.LogicManager()
+    assert isinstance(manager, BaseManager)
+    assert [rule.name for rule in manager.rules] == [
+        "safety_override", "support_priority", "context_flags", "tip_cap"]
+    assert all(isinstance(rule, BusinessRule) for rule in manager.rules)
+    assert manager.describe()["logic_rule"] == "v3"
+
+    sleepy = _enriched(_answers(sleep_hours_avg=5.5))
+    assert "sleep_routine" in manager.apply_logic(sleepy)["tips"]
+    capped_only = lm.LogicManager(rules=[TipCapRule()])
+    without_flags = capped_only.apply_logic(sleepy)
+    assert without_flags["ok"]
+    assert "sleep_routine" not in without_flags["tips"]
+    assert without_flags["tips"] == sleepy["tips"]
+
+    history = StressHistory("2605581", [
+        CheckInRecord({
+            "student_id": "2605581", "stress_score": 3.2,
+            "saved_at": "2026-10-01T01:00:00+00:00", "source": "ai_logic",
+            "ai_ok": True,
+        }),
+        CheckInRecord({
+            "student_id": "2605581", "stress_score": 2.4,
+            "saved_at": "2026-10-02T01:00:00+00:00", "source": "ai_logic",
+            "ai_ok": True,
+        }),
+    ])
+    trend = manager.analyse_trend(history)
+    assert trend.comparison == Trend.LOWER
+    assert trend.change == -0.8
+
+
+def test_manager_uses_the_injected_scorer():
+    """DIP: apply_logic audits with the Scorer it was given, not a hidden one.
+
+    Raising the injected audit score to 4.0 makes a genuine 3.0 Gemini
+    reply fail the 0.01 check. The default manager, given no scorer,
+    still accepts that same reply.
+    """
+    from logic.score_card import ScoreCard
+    from logic.scorer import Scorer
+    from logic.stress_scorer import StressScorer
+
+    class HighAudit(StressScorer):
+        """Same formula, then reports 4.0 so the cross-check can be seen."""
+
+        def score(self, answers):
+            card = super().score(answers)
+            return ScoreCard(4.0, card.scored_items, card.support_mean,
+                             "High", card.context_flags)
+
+    scorer = HighAudit()
+    assert isinstance(scorer, Scorer)
+    record = _enriched()
+    injected = lm.LogicManager(scorer=scorer).apply_logic(record)
+    assert injected["ok"] is False
+    assert injected["error"] == lm.ERROR_SCORE_MISMATCH
+    assert injected["logic_stress_score"] == 4.0
+    assert lm.LogicManager().apply_logic(record)["ok"] is True
+
+
 def load_tests(loader, tests, pattern):
     """Let `python -m unittest discover -s tests` run this file's test_ functions."""
     return function_suite(globals())

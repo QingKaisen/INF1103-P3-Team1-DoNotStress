@@ -1,19 +1,46 @@
 """
-DoNotStress — Logic Layer (logic_manager)
+DoNotStress — Logic Manager
 
-Post-AI validator. Gemini is mandatory for every record.
+Post-AI validator. Gemini is mandatory for every record. Logic recomputes
+the deterministic stress score from the 11 raw answers as an audit and
+never substitutes its own score. It does not re-validate Gemini's schema;
+the AI manager owns that.
 
-Gemini's analysis (from ai_manager.analyse_student, already schema-checked)
-is the result. Logic recomputes the deterministic stress score from the 11
-raw answers as an audit and never substitutes its own score. It does not
-re-validate Gemini's schema; ai_manager owns that.
+The formula lives only in a Scorer. StressScorer is the implementation
+used by default. The outcome is
+built by running BusinessRule objects in order, so a new rule is a new
+subclass rather than a change to LogicManager.evaluate(). main.py still
+calls the module-level names below; they are the default manager's methods.
 
-Logic is the only module that knows the scoring rules. main.py hands two of
-its functions to ai_manager, so ai_manager itself holds no domain logic:
-  scoring_instructions()  the formula and tier text for the Gemini prompt
-  verify_ai_scores()      checks Gemini's arithmetic and tier before the
-                          reply is accepted (a failure is retried like any
-                          other invalid AI response)
+Refinement
+----------
+This module used to be functions only, and it repeated the scoring formula
+already written in StressScorer. A finished check-in still comes out the
+same. The structure is what changed:
+
+- LogicManager is a class, and it inherits BaseManager, like the other
+  manager layers are meant to.
+- apply_logic no longer contains a copy of each rule. It builds one
+  Decision and calls BusinessRule.run() on the list it was given.
+- The scorer field is a Scorer, not a hard-wired StressScorer. The
+  default is still a StressScorer. A caller can pass another Scorer
+  (dependency inversion).
+- main.py did not change. apply_logic, verify_ai_scores,
+  scoring_instructions, evaluate, score and route are methods of one
+  default LogicManager.
+
+Relationships
+-------------
+Composition  — LogicManager creates the Decision for one check-in and
+               discards it when evaluate() returns. The default StressScorer
+               is created here and is not shared.
+Aggregation  — Business rules are whole–part, but each rule can be built
+               and tested on its own. Pass a list in to use those objects;
+               this manager does not own their lifecycle.
+Association  — TrendAnalyser reads a StressHistory. The history and its
+               records live in storage and are not owned here.
+Polymorphism — evaluate() calls BusinessRule.run() only. It does not branch
+               on which concrete rule it was given.
 
 Rules (logic_rule "v3")
 -----------------------
@@ -22,17 +49,14 @@ Rules (logic_rule "v3")
    scored as 6 - answer. sleep_hours_avg is converted: 8+ h -> 1,
    7 to <8 -> 2, 6 to <7 -> 3, 5 to <6 -> 4, under 5 -> 5.
 2. Cross-check — if Gemini's stress_score is within 0.01 of the logic
-   score (the same tolerance verify_ai_scores uses), Gemini's score, tier, tips,
-   stressors and reasoning are kept unchanged. Otherwise Logic returns a
-   "score_mismatch" error dict and the caller treats the check-in as an AI
-   failure (saved as pending, no result).
+   score, Gemini's score, tier, tips, stressors and reasoning are kept.
+   Otherwise Logic returns a "score_mismatch" error dict.
 3. Context flags — sleep, workload, finances, support. Each flag makes sure
    its matching tip is included if there is room (max 4 tips). Flags never
    replace Gemini's tips and never change the tier.
-4. Support priority — a multi-condition rule on two AI fields: when Gemini
-   rates the check-in High AND lists low_social_support in
-   primary_stressors, talk_to_someone is shown first and
-   keep_social_contact is added if there is room (support_priority True).
+4. Support priority — when Gemini rates the check-in High AND lists
+   low_social_support, talk_to_someone is shown first and
+   keep_social_contact is added if there is room.
 5. Safety — if the reflection safety check fired (safety_flag True), the
    tier is forced to High / "Please reach out" / prominence high and
    talk_to_someone is shown first. The stress score is not changed.
@@ -40,113 +64,73 @@ Rules (logic_rule "v3")
 Tiers: Low below 2.5, Moderate 2.5 to 3.5 inclusive, High above 3.5.
 These bands are team heuristics, not clinical cut-offs or a diagnosis.
 
-Pure procedural Python: functions only — no classes.
-No terminal I/O (print / input), no Gemini / network, no file I/O.
-
 Pipeline position:
   User → io_manager → ai_manager (must succeed) → logic_manager → data_manager
 """
 
 from __future__ import annotations
 
-import math
-from typing import Any
+from base_manager import BaseManager
+from json_types import JSONObject
+from logic.business_rule import BusinessRule
+from logic.context_flag_rule import ContextFlagRule
+from logic.decision import Decision
+from logic.safety_override_rule import SafetyOverrideRule
+from logic.scorer import Scorer
+from logic.stress_scorer import StressScorer
+from logic.support_priority_rule import SupportPriorityRule
+from logic.tip_cap_rule import TipCapRule
+from logic.trend import Trend
+from logic.trend_analyser import TrendAnalyser
+from records.stress_history import StressHistory
 
 
 # ---------------------------------------------------------------------------
-# Locked allow-lists — strings must match io_manager and ai_manager.
+# Locked allow-lists. The numbers come from StressScorer, the one formula.
 # ---------------------------------------------------------------------------
 
-SOFT_LABEL_OK = "You're doing ok"
-SOFT_LABEL_CHECK_IN = "Worth a check-in"
-SOFT_LABEL_REACH_OUT = "Please reach out"
+_SCORER = StressScorer
+
+SOFT_LABEL_OK = _SCORER.CATEGORY_LABELS["Low"]
+SOFT_LABEL_CHECK_IN = _SCORER.CATEGORY_LABELS["Moderate"]
+SOFT_LABEL_REACH_OUT = _SCORER.CATEGORY_LABELS["High"]
 
 RISK_CATEGORIES = ("Low", "Moderate", "High")
 
-_CATEGORY_TO_LABEL = {
-    "Low": SOFT_LABEL_OK,
-    "Moderate": SOFT_LABEL_CHECK_IN,
-    "High": SOFT_LABEL_REACH_OUT,
-}
-_CATEGORY_TO_PROMINENCE = {
-    "Low": "low",
-    "Moderate": "medium",
-    "High": "high",
-}
+_CATEGORY_TO_LABEL = _SCORER.CATEGORY_LABELS
+_CATEGORY_TO_PROMINENCE = _SCORER.CATEGORY_PROMINENCE
 
 LOGIC_SOURCE = "ai_logic"
 LOGIC_RULE = "v3"
 ERROR_AI_FIELDS_REQUIRED = "ai_fields_required"
 ERROR_SCORE_MISMATCH = "score_mismatch"
 
+SCALE_MIN = _SCORER.SCALE_MIN
+SCALE_MAX = _SCORER.SCALE_MAX
+ANSWER_KEYS = _SCORER.ANSWER_KEYS
+REVERSED_KEYS = _SCORER.REVERSED_KEYS
+SUPPORT_KEYS = _SCORER.SUPPORT_KEYS
+SLEEP_HOURS_MIN = _SCORER.SLEEP_HOURS_MIN
+SLEEP_HOURS_MAX = _SCORER.SLEEP_HOURS_MAX
+SLEEP_HOUR_BANDS = _SCORER.SLEEP_HOUR_BANDS
+SLEEP_HOURS_BELOW_ALL = _SCORER.SLEEP_HOURS_BELOW_ALL
+CHECK_IN_FROM = _SCORER.CHECK_IN_FROM
+REACH_OUT_ABOVE = _SCORER.REACH_OUT_ABOVE
+SCORE_TOLERANCE = _SCORER.TOLERANCE
 
-# ---------------------------------------------------------------------------
-# Domain settings - the team's numbers. Change them here and nowhere else.
-# ---------------------------------------------------------------------------
+FLAG_SLEEP = _SCORER.FLAG_SLEEP
+FLAG_WORKLOAD = _SCORER.FLAG_WORKLOAD
+FLAG_FINANCES = _SCORER.FLAG_FINANCES
+FLAG_SUPPORT = _SCORER.FLAG_SUPPORT
+SLEEP_FLAG_BELOW_HOURS = _SCORER.SLEEP_FLAG_BELOW_HOURS
+SLEEP_QUALITY_FLAG_MIN = _SCORER.SLEEP_QUALITY_FLAG_MIN
+WORKLOAD_FLAG_MIN = _SCORER.WORKLOAD_FLAG_MIN
+FINANCE_FLAG_MIN = _SCORER.FINANCE_FLAG_MIN
+SUPPORT_FLAG_BELOW = _SCORER.SUPPORT_FLAG_BELOW
 
-SCALE_MIN = 1
-SCALE_MAX = 5
-
-# The 11 scored answers, in survey order.
-ANSWER_KEYS = (
-    "pss_1",
-    "pss_2",
-    "pss_3",
-    "pss_4",
-    "sleep_hours_avg",
-    "sleep_quality",
-    "pas_workload",
-    "pas_catchup",
-    "fin_stress",
-    "mspss_friends",
-    "mspss_family",
-)
-
-# Positively worded items: a high answer means LESS stress (6 - answer).
-REVERSED_KEYS = ("pss_2", "pss_3", "mspss_friends", "mspss_family")
-SUPPORT_KEYS = ("mspss_friends", "mspss_family")
-
-SLEEP_HOURS_MIN = 0
-SLEEP_HOURS_MAX = 14
-
-# Sleep hours -> 1–5 stress value: (at least this many hours, value).
-SLEEP_HOUR_BANDS = ((8, 1), (7, 2), (6, 3), (5, 4))
-SLEEP_HOURS_BELOW_ALL = 5
-
-# Tier bands on the 1–5 average.
-CHECK_IN_FROM = 2.5    # 2.5 to 3.5 inclusive -> Moderate
-REACH_OUT_ABOVE = 3.5  # above 3.5 -> High
-
-# Gemini's stress_score must sit this close to Logic's (same as ai_manager).
-SCORE_TOLERANCE = 0.01
-
-# Context flags (raw answers, same rules as the check-in guide).
-SLEEP_FLAG_BELOW_HOURS = 6
-SLEEP_QUALITY_FLAG_MIN = 4   # fairly bad or very bad
-WORKLOAD_FLAG_MIN = 4        # agree or strongly agree
-FINANCE_FLAG_MIN = 4         # high or overwhelming money stress
-SUPPORT_FLAG_BELOW = 2.5     # mean raw agreement, mostly disagreeing
-
-FLAG_SLEEP = "sleep"
-FLAG_WORKLOAD = "workload"
-FLAG_FINANCES = "finances"
-FLAG_SUPPORT = "support"
-
-# Each flag makes sure this tip is shown (if there is room).
-_FLAG_TIPS = (
-    (FLAG_SLEEP, "sleep_routine"),
-    (FLAG_WORKLOAD, "workload_chunks"),
-    (FLAG_FINANCES, "money_worries"),
-    (FLAG_SUPPORT, "talk_to_someone"),
-)
-
-_TIP_TALK = "talk_to_someone"
-_TIP_KEEP_CONTACT = "keep_social_contact"
-MAX_TIPS = 4
-
-# Multi-condition rule on Gemini's fields (see needs_support_priority).
-SUPPORT_PRIORITY_CATEGORY = "High"
-SUPPORT_PRIORITY_STRESSOR = "low_social_support"
+MAX_TIPS = TipCapRule.MAX_TIPS
+SUPPORT_PRIORITY_CATEGORY = SupportPriorityRule.CATEGORY
+SUPPORT_PRIORITY_STRESSOR = SupportPriorityRule.STRESSOR
 
 # Short internal note stored with each record (data_manager requires it).
 # The student never sees this text; the UI shows tips instead.
@@ -181,488 +165,332 @@ FIN_OPTIONS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def default_rules() -> list[BusinessRule]:
+    """The v3 rules, in the only order that keeps today's behaviour.
 
-def apply_logic(record: dict[str, Any]) -> dict[str, Any]:
+    Safety can raise the tier before the other rules look at it. Support
+    priority then leads with "talk to someone". Context flags only suggest
+    extra tips. Tip cap must stay last: it keeps Gemini's own tips and
+    stops the list at four. A new rule is added to this list, not written
+    into LogicManager.
     """
-    Validate Gemini's analysis against the student's answers.
-
-    Input MUST be a dict holding the 11 raw answers and Gemini's fields
-    (see REQUIRED_AI_FIELDS). Gemini's result is kept unchanged when its
-    stress_score matches the deterministic score within 0.01.
-
-    On success, returns a shallow copy with ok=True, source="ai_logic",
-    ai_ok=True, logic_rule="v3", the final outcome fields, plus:
-      logic_stress_score  the deterministic 1–5 average (audit only)
-      logic_clamp_notes   why Logic changed anything (empty if nothing)
-      context_flags       {"sleep", "workload", "finances", "support"}
-      support_mean        mean raw agreement of the two support answers
-      factor_insights     the four factor cards for the result page
-      risk_score          (stress_score - 1) / 4, kept for compatibility
-      recommended_support short internal note for the final tier
-    feelings_text is removed.
-
-    On missing or unusable fields, returns an error dict:
-      {"ok": False, "error": "ai_fields_required", "missing": [...],
-       "invalid": [...], ...}
-    If Gemini's stress_score is more than 0.01 from Logic's, returns:
-      {"ok": False, "error": "score_mismatch", "stress_score": ...,
-       "logic_stress_score": ..., ...}
-
-    Does not mutate the original dict.
-    """
-    if not isinstance(record, dict):
-        return _error_result(
-            {},
-            missing=list(REQUIRED_AI_FIELDS + ANSWER_KEYS),
-            invalid=["record"],
-        )
-
-    missing, invalid = _field_problems(record)
-    if missing or invalid:
-        return _error_result(record, missing=missing, invalid=invalid)
-
-    scores = score_answers(record)
-    logic_score = scores["stress_score"]
-    gemini_score = _safe_float(record["stress_score"])
-
-    # Cross-check only: Logic never substitutes its own score.
-    if not _within_tolerance(gemini_score, logic_score):
-        return _score_mismatch_result(record, gemini_score, logic_score)
-
-    category = record["risk_category"]
-    soft_label = record["soft_label"]
-    prominence = record["speak_prominence"]
-    notes: list[str] = []
-    lead_tips: list[str] = []
-
-    # Safety override from the reflection check (text itself is never used).
-    if record.get("safety_flag") is True:
-        category = "High"
-        soft_label = SOFT_LABEL_REACH_OUT
-        prominence = "high"
-        lead_tips = [_TIP_TALK]
-        notes.append("safety_override: reflection safety check fired")
-
-    # Business rule on two AI fields: a High tier AND low social support.
-    support_priority = needs_support_priority(record)
-    if support_priority:
-        lead_tips = [_TIP_TALK]
-        notes.append("support_priority: High tier with low social support")
-
-    flags = scores["context_flags"]
-    flag_tips = [tip for flag, tip in _FLAG_TIPS if flags[flag]]
-    if support_priority:
-        flag_tips.insert(0, _TIP_KEEP_CONTACT)
-    tips = _merge_tips(lead_tips, list(record["tips"]), flag_tips)
-
-    enriched = dict(record)
-    enriched.pop("feelings_text", None)
-    enriched.update({
-        "ok": True,
-        "error": None,
-        "source": LOGIC_SOURCE,
-        "ai_ok": True,
-        "logic_rule": LOGIC_RULE,
-        "stress_score": record["stress_score"],
-        "logic_stress_score": logic_score,
-        "risk_score": risk_score_for(gemini_score),
-        "recommended_support": RECOMMENDED_SUPPORT[category],
-        "risk_category": category,
-        "soft_label": soft_label,
-        "speak_prominence": prominence,
-        "tips": tips,
-        "primary_stressors": list(record["primary_stressors"]),
-        "reasoning": record["reasoning"],
-        "logic_clamp_notes": notes,
-        "support_priority": support_priority,
-        "context_flags": flags,
-        "support_mean": scores["support_mean"],
-        "factor_insights": factor_insights(record, scores),
-    })
-    return enriched
-
-
-def score_answers(record: dict[str, Any]) -> dict[str, Any]:
-    """
-    Deterministic score of the 11 answers. Caller must pass usable numbers.
-
-    Returns stress_score (1.0–5.0, 2 dp), the tier it falls in, the
-    support mean and the four context flags.
-    """
-    items = [scored_value(key, _safe_float(record[key])) for key in ANSWER_KEYS]
-    average = round(sum(items) / len(items), 2)
-    support = [_safe_float(record[key]) for key in SUPPORT_KEYS]
-    support_mean = round(sum(support) / len(support), 2)
-    category = category_for_score(average)
-    return {
-        "stress_score": average,
-        "scored_item_count": len(items),
-        "support_mean": support_mean,
-        "support_item_count": len(support),
-        "risk_category": category,
-        "soft_label": _CATEGORY_TO_LABEL[category],
-        "speak_prominence": _CATEGORY_TO_PROMINENCE[category],
-        "context_flags": context_flags(record, support_mean),
-    }
-
-
-def evaluate(record: dict[str, Any]) -> dict[str, Any]:
-    """Run every business rule on the AI-enriched record. Wraps apply_logic.
-
-    Returns the decision dict (ok=True with final fields, or an error dict).
-    """
-    return apply_logic(record)
-
-
-def score(record: dict[str, Any]) -> float | None:
-    """Return the verified AI stress_score, or None if Logic rejects it.
-
-    Logic never substitutes its own number: logic_stress_score in the
-    evaluate() result is an audit value only.
-    """
-    result = apply_logic(record)
-    if not result.get("ok"):
-        return None
-    return float(result["stress_score"])
-
-
-def route(record: dict[str, Any]) -> str:
-    """Return the outcome path: "Low", "Moderate", "High", or "unavailable".
-
-    Routes on the final risk_category only when the soft_label agrees with it,
-    otherwise "unavailable". Pass the dict evaluate() returned.
-    """
-    if not isinstance(record, dict) or not record.get("ok"):
-        return "unavailable"
-    category = record.get("risk_category")
-    if category in _CATEGORY_TO_LABEL and record.get("soft_label") == _CATEGORY_TO_LABEL[category]:
-        return category
-    return "unavailable"
-
-
-def scored_value(key: str, answer: float) -> float:
-    """Stress-direction value: sleep hours converted, positive items 6 - answer."""
-    if key == "sleep_hours_avg":
-        return sleep_hours_stress(answer)
-    if key in REVERSED_KEYS:
-        return (SCALE_MIN + SCALE_MAX) - answer
-    return answer
-
-
-def sleep_hours_stress(hours: float) -> int:
-    """Map typical nightly hours onto the 1–5 stress scale. Scoring only."""
-    for at_least, value in SLEEP_HOUR_BANDS:
-        if hours >= at_least:
-            return value
-    return SLEEP_HOURS_BELOW_ALL
-
-
-def category_for_score(stress_score: float) -> str:
-    """Low below 2.5, Moderate 2.5 to 3.5 inclusive, High above 3.5."""
-    if stress_score > REACH_OUT_ABOVE:
-        return "High"
-    if stress_score >= CHECK_IN_FROM:
-        return "Moderate"
-    return "Low"
-
-
-def needs_support_priority(record: dict[str, Any]) -> bool:
-    """Multi-condition business rule on two fields from Gemini's reply.
-
-    True when Gemini rated the check-in High (risk_category) AND named
-    low social support as a stressor (primary_stressors). apply_logic then
-    puts "talk to someone" first and adds "keep in touch" while there is room.
-    """
-    stressors = record.get("primary_stressors")
-    return (
-        record.get("risk_category") == SUPPORT_PRIORITY_CATEGORY
-        and isinstance(stressors, list)
-        and SUPPORT_PRIORITY_STRESSOR in stressors
-    )
-
-
-def risk_score_for(stress_score: float) -> float:
-    """Map the 1–5 stress score onto 0–1. Kept for compatibility; not a probability."""
-    return (stress_score - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)
-
-
-def scored_items(answers: dict[str, Any]) -> dict[str, int]:
-    """The 11 answers converted onto the 1–5 stress scale.
-
-    This is exactly what Gemini must return as scored_items. Caller must
-    pass usable answers (see verify_ai_scores).
-    """
-    return {key: int(scored_value(key, _safe_float(answers[key]))) for key in ANSWER_KEYS}
-
-
-def verify_ai_scores(ai_fields: dict[str, Any], answers: dict[str, Any]) -> str | None:
-    """Check Gemini's arithmetic and tier against the student's answers.
-
-    main.py passes this to ai_manager, which treats any message as an
-    invalid AI response and retries. Checks, in order:
-      1. risk_category, soft_label and speak_prominence match the tier of
-         Gemini's stress_score
-      2. scored_items equal the converted answers exactly
-      3. stress_score is within 0.01 of the mean of those items
-
-    Returns an error message, or None when everything matches. Never raises.
-    """
-    if not isinstance(ai_fields, dict) or not isinstance(answers, dict):
-        return "verify_ai_scores needs the AI fields and the answers as dicts."
-    unusable = [
-        key for key in ANSWER_KEYS
-        if key not in answers
-        or not _answer_in_range(key, answers[key])
-        or (key != "sleep_hours_avg" and not float(answers[key]).is_integer())
-    ]
-    if unusable:
-        return f"Cannot convert {', '.join(unusable)} onto the 1-5 stress scale."
-    gemini_score = _safe_float(ai_fields.get("stress_score"))
-    if gemini_score is None:
-        return "stress_score must be a number."
-
-    expected_category = category_for_score(gemini_score)
-    if ai_fields.get("risk_category") != expected_category:
-        return f"risk_category must be {expected_category} for stress_score {gemini_score}."
-    if ai_fields.get("soft_label") != _CATEGORY_TO_LABEL[expected_category]:
-        return "soft_label must match risk_category."
-    if ai_fields.get("speak_prominence") != _CATEGORY_TO_PROMINENCE[expected_category]:
-        return "speak_prominence must match risk_category."
-
-    if ai_fields.get("scored_items") != scored_items(answers):
-        return "scored_items does not match the converted answers."
-    expected_score = score_answers(answers)["stress_score"]
-    if not _within_tolerance(gemini_score, expected_score):
-        return (
-            "stress_score must match the mean of the 11 converted answers "
-            f"(expected {expected_score})."
-        )
-    return None
-
-
-def scoring_instructions() -> str:
-    """The scoring formula and tier rules, written as instructions for Gemini.
-
-    Built from this module's constants, so the prompt always matches the
-    rules verify_ai_scores checks.
-    """
-    reversed_keys = ", ".join(REVERSED_KEYS)
-    sleep_bands = ", ".join(
-        f"{hours:g} or more{' hours' if index == 0 else ''} -> {value}"
-        for index, (hours, value) in enumerate(SLEEP_HOUR_BANDS)
-    )
-    return (
-        f"Convert each answer onto the {SCALE_MIN} to {SCALE_MAX} stress scale:\n"
-        f"- {reversed_keys} are positively worded. "
-        f"Convert each as {SCALE_MIN + SCALE_MAX} - answer.\n"
-        f"- sleep_hours_avg is hours from {SLEEP_HOURS_MIN} to {SLEEP_HOURS_MAX} in half-hour steps. "
-        f"Convert it as: {sleep_bands}, otherwise {SLEEP_HOURS_BELOW_ALL}.\n"
-        f"- Every other answer is already on the {SCALE_MIN} to {SCALE_MAX} scale. "
-        "Use the number as answered.\n"
-        f"stress_score is the mean of those {len(ANSWER_KEYS)} converted values, "
-        "rounded to 2 decimal places. Higher stress is worse.\n"
-        "Then set the tier from that stress_score:\n"
-        f"- below {CHECK_IN_FROM:g}: risk_category Low, soft_label \"{SOFT_LABEL_OK}\", "
-        "speak_prominence low\n"
-        f"- {CHECK_IN_FROM:g} to {REACH_OUT_ABOVE:g} inclusive: risk_category Moderate, "
-        f"soft_label \"{SOFT_LABEL_CHECK_IN}\", speak_prominence medium\n"
-        f"- above {REACH_OUT_ABOVE:g}: risk_category High, "
-        f"soft_label \"{SOFT_LABEL_REACH_OUT}\", speak_prominence high\n"
-        "These bands are a simple guide for this check-in, not clinical cut-offs.\n"
-    )
-
-
-def context_flags(record: dict[str, Any], support_mean: float) -> dict[str, bool]:
-    """The four context flags from the raw answers."""
-    return {
-        FLAG_SLEEP: (
-            _safe_float(record["sleep_hours_avg"]) < SLEEP_FLAG_BELOW_HOURS
-            or _safe_float(record["sleep_quality"]) >= SLEEP_QUALITY_FLAG_MIN
-        ),
-        FLAG_WORKLOAD: _safe_float(record["pas_workload"]) >= WORKLOAD_FLAG_MIN,
-        FLAG_FINANCES: _safe_float(record["fin_stress"]) >= FINANCE_FLAG_MIN,
-        FLAG_SUPPORT: support_mean < SUPPORT_FLAG_BELOW,
-    }
-
-
-def factor_insights(record: dict[str, Any], scores: dict[str, Any]) -> list[dict[str, Any]]:
-    """The four factor cards shown on the result page."""
-    flags = scores["context_flags"]
-    sleep_quality = int(record["sleep_quality"])
-    workload = int(record["pas_workload"])
-    finances = int(record["fin_stress"])
     return [
-        dict(
-            title="Rest & recovery",
-            flagged=flags[FLAG_SLEEP],
-            value=(
-                f"{_safe_float(record['sleep_hours_avg']):g} hours · "
-                f"{SLEEP_QUALITY_OPTIONS[sleep_quality - 1]} quality"
-            ),
-            text=(
-                "Sleep and stress affect each other. When sleep is short or "
-                "restless, everyday tasks can feel harder, and stress can make "
-                "it harder to sleep well."
-            ),
-        ),
-        dict(
-            title="Study demands",
-            flagged=flags[FLAG_WORKLOAD],
-            value=f"{workload}/5 · {AGREE_OPTIONS[workload - 1]}",
-            text=(
-                "A heavy workload can leave less time to rest and recharge. "
-                "Feeling behind or overloaded is one of the most common sources "
-                "of student stress."
-            ),
-        ),
-        dict(
-            title="Money pressures",
-            flagged=flags[FLAG_FINANCES],
-            value=f"{finances}/5 · {FIN_OPTIONS[finances - 1]}",
-            text=(
-                "Financial worries can add to the pressure of studying. "
-                "Concerns about money often weigh on focus and sleep."
-            ),
-        ),
-        dict(
-            title="Support & connection",
-            flagged=flags[FLAG_SUPPORT],
-            value=(
-                f"{scores['support_mean']:g}/5 agreement across "
-                f"{scores['support_item_count']} answers"
-            ),
-            text=(
-                "Having people to turn to can make stressful times easier to "
-                "handle. Strong support from friends or family helps protect "
-                "against stress."
-            ),
-        ),
+        SafetyOverrideRule(),
+        SupportPriorityRule(),
+        ContextFlagRule(),
+        TipCapRule(),
     ]
 
 
-# ---------------------------------------------------------------------------
-# Error result — no invented outcomes
-# ---------------------------------------------------------------------------
+class LogicManager(BaseManager):
+    """Applies domain rules to one AI-enriched check-in.
 
-def _error_result(
-    record: dict[str, Any],
-    *,
-    missing: list[str],
-    invalid: list[str],
-) -> dict[str, Any]:
+    Single responsibility: decide the final tier, tips and audit fields.
+    Scoring arithmetic stays in StressScorer. Each business rule stays in
+    its own class (open/closed). Any BusinessRule subclass can be passed
+    in and is used the same way (Liskov).
     """
-    Pass through the original fields without adding soft outcomes.
-    Callers must treat ok=False as a hard stop, not a fallback engine.
-    """
-    result = dict(record) if isinstance(record, dict) else {}
-    result.pop("feelings_text", None)
-    result["ok"] = False
-    result["error"] = ERROR_AI_FIELDS_REQUIRED
-    result["missing"] = list(missing)
-    result["invalid"] = list(invalid)
-    result["message"] = (
-        "Logic requires a successful Gemini (AI-enriched) record and all 11 "
-        "answers; it does not guess outcomes without them."
-    )
-    return result
+
+    def __init__(self, scorer: Scorer | None = None,
+                 rules: list[BusinessRule] | None = None,
+                 analyser: TrendAnalyser | None = None) -> None:
+        super().__init__("logic_manager")
+        # Composition of the default formula. The field type is Scorer,
+        # so this class depends on the interface (dependency inversion).
+        # StressScorer is only the object used when nobody passes one in.
+        self.__scorer: Scorer = scorer if scorer is not None else StressScorer()
+        # Aggregation: a caller may pass rules that already exist.
+        self.__rules: list[BusinessRule] = (
+            list(rules) if rules is not None else default_rules())
+        # Association: the analyser does not own the stored history.
+        self.__analyser: TrendAnalyser = (
+            analyser if analyser is not None else TrendAnalyser())
+
+    @property
+    def rules(self) -> list[BusinessRule]:
+        """The rules this manager will run, in order."""
+        return list(self.__rules)
+
+    def describe(self) -> JSONObject:
+        """How this manager is set up. Never includes secrets."""
+        return {
+            "logic_rule": LOGIC_RULE,
+            "rules": [rule.name for rule in self.__rules],
+            "score_tolerance": self.__scorer.TOLERANCE,
+        }
+
+    def apply_logic(self, record: dict) -> dict:
+        """Validate Gemini's analysis against the student's answers.
+
+        On success, returns a shallow copy with ok=True and the final
+        outcome. On missing fields or a score more than 0.01 off, returns
+        an error dict and does not invent an outcome. Does not mutate
+        the original dict.
+        """
+        if not isinstance(record, dict):
+            return self.__error_result(
+                {}, missing=list(REQUIRED_AI_FIELDS + ANSWER_KEYS),
+                invalid=["record"])
+
+        missing, invalid = self.__field_problems(record)
+        if missing or invalid:
+            return self.__error_result(record, missing=missing, invalid=invalid)
+
+        scores = self.score_answers(record)
+        logic_score = scores["stress_score"]
+        gemini_score = self.__scorer.number(record["stress_score"])
+        # Audit only. A mismatch is an error dict, not a score we invented.
+        if (gemini_score is None
+                or not self.__scorer.within_tolerance(gemini_score, logic_score)):
+            shown = gemini_score if gemini_score is not None else logic_score
+            return self.__score_mismatch_result(record, shown, logic_score)
+
+        # One Decision for this check-in (composition). The loop does not
+        # ask which subclass each rule is: that is the polymorphism, and it
+        # is why adding a rule does not mean editing this method (open/closed).
+        decision = Decision(record, scores["context_flags"])
+        for rule in self.__rules:
+            rule.run(decision)
+
+        category = decision.risk_category
+        enriched = dict(record)
+        enriched.pop("feelings_text", None)
+        enriched.update({
+            "ok": True,
+            "error": None,
+            "source": LOGIC_SOURCE,
+            "ai_ok": True,
+            "logic_rule": LOGIC_RULE,
+            "stress_score": record["stress_score"],
+            "logic_stress_score": logic_score,
+            "risk_score": self.__scorer.risk_score_for(gemini_score),
+            "recommended_support": RECOMMENDED_SUPPORT[category],
+            "risk_category": category,
+            "soft_label": decision.soft_label,
+            "speak_prominence": decision.speak_prominence,
+            "tips": decision.tips,
+            "primary_stressors": list(record["primary_stressors"]),
+            "reasoning": record["reasoning"],
+            "logic_clamp_notes": decision.notes,
+            "support_priority": decision.support_priority,
+            "context_flags": scores["context_flags"],
+            "support_mean": scores["support_mean"],
+            "factor_insights": self.factor_insights(record, scores),
+        })
+        return enriched
+
+    def evaluate(self, record: dict) -> dict:
+        """Run every business rule on the AI-enriched record."""
+        return self.apply_logic(record)
+
+    def score(self, record: dict) -> float | None:
+        """The verified AI stress_score, or None if Logic rejects it.
+
+        Logic never substitutes its own number: logic_stress_score on the
+        evaluate() result is an audit value only.
+        """
+        result = self.apply_logic(record)
+        if not result.get("ok"):
+            return None
+        return float(result["stress_score"])
+
+    def route(self, record: dict) -> str:
+        """"Low", "Moderate", "High", or "unavailable".
+
+        Routes on the final risk_category only when the soft_label agrees.
+        Pass the dict evaluate() returned.
+        """
+        if not isinstance(record, dict) or not record.get("ok"):
+            return "unavailable"
+        category = record.get("risk_category")
+        if (category in _CATEGORY_TO_LABEL
+                and record.get("soft_label") == _CATEGORY_TO_LABEL[category]):
+            return str(category)
+        return "unavailable"
+
+    def score_answers(self, record: dict) -> dict:
+        """Deterministic score of the 11 answers. Caller must pass usable numbers."""
+        card = self.__scorer.score(record)
+        category = card.risk_category
+        return {
+            "stress_score": card.stress_score,
+            "scored_item_count": card.item_count,
+            "support_mean": card.support_mean,
+            "support_item_count": len(self.__scorer.SUPPORT_KEYS),
+            "risk_category": category,
+            "soft_label": self.__scorer.label_for(category),
+            "speak_prominence": self.__scorer.prominence_for(category),
+            "context_flags": card.context_flags,
+        }
+
+    def scored_value(self, key: str, answer: float) -> float:
+        """Stress-direction value: sleep hours converted, positive items 6 - answer."""
+        return self.__scorer.scored_value(key, answer)
+
+    def sleep_hours_stress(self, hours: float) -> int:
+        """Map typical nightly hours onto the 1–5 stress scale. Scoring only."""
+        return self.__scorer.sleep_hours_stress(hours)
+
+    def category_for_score(self, stress_score: float) -> str:
+        """Low below 2.5, Moderate 2.5 to 3.5 inclusive, High above 3.5."""
+        return self.__scorer.category_for(stress_score)
+
+    def needs_support_priority(self, record: dict) -> bool:
+        """True when Gemini rated High AND named low social support."""
+        if not isinstance(record, dict):
+            return False
+        return SupportPriorityRule().applies(Decision(record, {}))
+
+    def risk_score_for(self, stress_score: float) -> float:
+        """Map the 1–5 stress score onto 0–1. Kept for compatibility."""
+        return self.__scorer.risk_score_for(stress_score)
+
+    def scored_items(self, answers: dict) -> dict[str, int]:
+        """The 11 answers on the 1–5 stress scale. What Gemini must return."""
+        return self.__scorer.scored_items(answers)
+
+    def verify_ai_scores(self, ai_fields: dict, answers: dict) -> str | None:
+        """Check Gemini's arithmetic and tier. An error string, or None.
+
+        main.py passes this to the AI manager, which retries on any message.
+        Never raises.
+        """
+        return self.__scorer.verify(ai_fields, answers)
+
+    def scoring_instructions(self) -> str:
+        """The scoring formula and tier rules, written for the Gemini prompt."""
+        return self.__scorer.instructions()
+
+    def context_flags(self, record: dict, support_mean: float) -> dict[str, bool]:
+        """The four context flags from the raw answers."""
+        return self.__scorer.context_flags(record, support_mean)
+
+    def factor_insights(self, record: dict, scores: dict) -> list[dict]:
+        """The four factor cards shown on the result page."""
+        flags = scores["context_flags"]
+        sleep_quality = int(record["sleep_quality"])
+        workload = int(record["pas_workload"])
+        finances = int(record["fin_stress"])
+        return [
+            {
+                "title": "Rest & recovery",
+                "flagged": flags[FLAG_SLEEP],
+                "value": (
+                    f"{self.__scorer.number(record['sleep_hours_avg']):g} hours · "
+                    f"{SLEEP_QUALITY_OPTIONS[sleep_quality - 1]} quality"
+                ),
+                "text": (
+                    "Sleep and stress affect each other. When sleep is short or "
+                    "restless, everyday tasks can feel harder, and stress can make "
+                    "it harder to sleep well."
+                ),
+            },
+            {
+                "title": "Study demands",
+                "flagged": flags[FLAG_WORKLOAD],
+                "value": f"{workload}/5 · {AGREE_OPTIONS[workload - 1]}",
+                "text": (
+                    "A heavy workload can leave less time to rest and recharge. "
+                    "Feeling behind or overloaded is one of the most common sources "
+                    "of student stress."
+                ),
+            },
+            {
+                "title": "Money pressures",
+                "flagged": flags[FLAG_FINANCES],
+                "value": f"{finances}/5 · {FIN_OPTIONS[finances - 1]}",
+                "text": (
+                    "Financial worries can add to the pressure of studying. "
+                    "Concerns about money often weigh on focus and sleep."
+                ),
+            },
+            {
+                "title": "Support & connection",
+                "flagged": flags[FLAG_SUPPORT],
+                "value": (
+                    f"{scores['support_mean']:g}/5 agreement across "
+                    f"{scores['support_item_count']} answers"
+                ),
+                "text": (
+                    "Having people to turn to can make stressful times easier to "
+                    "handle. Strong support from friends or family helps protect "
+                    "against stress."
+                ),
+            },
+        ]
+
+    def analyse_trend(self, history: StressHistory) -> Trend:
+        """How this student's verified scores are moving. Not a diagnosis."""
+        return self.__analyser.analyse(history)
+
+    def within_tolerance(self, gemini_score: float, logic_score: float) -> bool:
+        """True when Gemini is at most 0.01 away from Logic's score."""
+        return self.__scorer.within_tolerance(gemini_score, logic_score)
+
+    def __error_result(self, record: dict, *, missing: list[str],
+                       invalid: list[str]) -> dict:
+        """Pass the original fields through. ok=False is a hard stop."""
+        result = dict(record) if isinstance(record, dict) else {}
+        result.pop("feelings_text", None)
+        result["ok"] = False
+        result["error"] = ERROR_AI_FIELDS_REQUIRED
+        result["missing"] = list(missing)
+        result["invalid"] = list(invalid)
+        result["message"] = (
+            "Logic requires a successful Gemini (AI-enriched) record and all 11 "
+            "answers; it does not guess outcomes without them."
+        )
+        return result
+
+    def __score_mismatch_result(self, record: dict, gemini_score: float,
+                                logic_score: float) -> dict:
+        """Gemini's score disagrees with the answers. No outcome is produced."""
+        result = dict(record)
+        result.pop("feelings_text", None)
+        result.update({
+            "ok": False,
+            "error": ERROR_SCORE_MISMATCH,
+            "stress_score": record["stress_score"],
+            "logic_stress_score": logic_score,
+            "message": (
+                f"Gemini stress_score {gemini_score:g} does not match the answers "
+                f"({logic_score:g}); no result is given."
+            ),
+        })
+        return result
+
+    def __field_problems(self, record: dict) -> tuple[list[str], list[str]]:
+        """(missing keys, unusable keys). Schema checks stay with the AI manager."""
+        missing = [key for key in REQUIRED_AI_FIELDS + ANSWER_KEYS if key not in record]
+        invalid = [
+            key for key in ("stress_score",) + ANSWER_KEYS
+            if key in record and not self.__scorer.answer_in_range(key, record[key])
+        ]
+        for key in ("tips", "primary_stressors"):
+            if key in record and not isinstance(record[key], list):
+                invalid.append(key)
+        return missing, invalid
 
 
-def _score_mismatch_result(
-    record: dict[str, Any],
-    gemini_score: float,
-    logic_score: float,
-) -> dict[str, Any]:
-    """
-    Gemini's score disagrees with the answers. No outcome is produced; the
-    caller treats this like any other AI failure.
-    """
-    result = dict(record)
-    result.pop("feelings_text", None)
-    result.update({
-        "ok": False,
-        "error": ERROR_SCORE_MISMATCH,
-        "stress_score": record["stress_score"],
-        "logic_stress_score": logic_score,
-        "message": (
-            f"Gemini stress_score {gemini_score:g} does not match the answers "
-            f"({logic_score:g}); no result is given."
-        ),
-    })
-    return result
+# main.py and the older tests still call logic_manager.apply_logic(...).
+# These names are methods of one shared LogicManager. They are not a second
+# copy of the scoring rules.
+_default = LogicManager()
 
-
-def _field_problems(record: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """
-    Return (missing keys, unusable keys).
-
-    Only checks that fields exist and that numbers Logic computes with are
-    numbers. Gemini's schema is ai_manager's job.
-    """
-    missing = [key for key in REQUIRED_AI_FIELDS + ANSWER_KEYS if key not in record]
-    invalid = [
-        key for key in ("stress_score",) + ANSWER_KEYS
-        if key in record and not _answer_in_range(key, record[key])
-    ]
-    for key in ("tips", "primary_stressors"):
-        if key in record and not isinstance(record[key], list):
-            invalid.append(key)
-    return missing, invalid
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _merge_tips(lead: list[str], gemini: list[str], flagged: list[str]) -> list[str]:
-    """
-    lead first, then all of Gemini's tips, then flag tips while there is room.
-
-    Gemini gives at most 3 tips and lead holds at most one, so Gemini's tips
-    are never pushed out.
-    """
-    ordered: list[str] = []
-    for tip_id in lead + gemini:
-        if tip_id not in ordered:
-            ordered.append(tip_id)
-    for tip_id in flagged:
-        if len(ordered) >= MAX_TIPS:
-            break
-        if tip_id not in ordered:
-            ordered.append(tip_id)
-    return ordered[:MAX_TIPS]
-
-
-def _within_tolerance(gemini_score: float, logic_score: float) -> bool:
-    """True when Gemini's score is at most SCORE_TOLERANCE (0.01) from Logic's.
-
-    The tiny allowance absorbs floating-point error, so a score exactly 0.01
-    off (for example 4.63 against 4.64) is accepted, as the brief says.
-    """
-    return abs(gemini_score - logic_score) <= SCORE_TOLERANCE + 1e-9
-
-
-def _answer_in_range(key: str, value: Any) -> bool:
-    """True if value is a number Logic can score (sleep hours 0–14, else 1–5)."""
-    number = _safe_float(value)
-    if number is None:
-        return False
-    if key == "sleep_hours_avg":
-        return SLEEP_HOURS_MIN <= number <= SLEEP_HOURS_MAX
-    return SCALE_MIN <= number <= SCALE_MAX
-
-
-def _safe_float(value: Any) -> float | None:
-    """Return value as a finite float, or None if it is missing or unusable.
-
-    None, True/False, text that is not a number, NaN and infinity all give None.
-    """
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if math.isfinite(number) else None
+apply_logic = _default.apply_logic
+evaluate = _default.evaluate
+score = _default.score
+route = _default.route
+score_answers = _default.score_answers
+scored_value = _default.scored_value
+sleep_hours_stress = _default.sleep_hours_stress
+category_for_score = _default.category_for_score
+needs_support_priority = _default.needs_support_priority
+risk_score_for = _default.risk_score_for
+scored_items = _default.scored_items
+verify_ai_scores = _default.verify_ai_scores
+scoring_instructions = _default.scoring_instructions
+context_flags = _default.context_flags
+factor_insights = _default.factor_insights
+analyse_trend = _default.analyse_trend
+_within_tolerance = _default.within_tolerance
