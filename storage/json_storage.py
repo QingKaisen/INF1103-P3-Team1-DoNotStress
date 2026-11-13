@@ -90,8 +90,10 @@ class JSONStorage(StorageBackend):
 
     def __back_up(self, problem: str) -> str:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        number = getattr(self, "_backup_n", 0) + 1
+        self._backup_n = number
         backup = self.__path.with_name(
-            f"{self.__path.stem}.corrupt-{stamp}.json")
+            f"{self.__path.stem}.corrupt-{stamp}-{number}.json")
         try:
             shutil.copy2(self.__path, backup)
         except OSError as error:
