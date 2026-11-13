@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ai.ai_provider import AIProvider
-from ai.fake_provider import FakeProvider
+from fake_provider import DEFAULT_MODELS, FakeProvider
 from ai.gemini_provider import GeminiProvider
 from plain_tests import case, function_suite
 
@@ -133,7 +133,7 @@ def test_fake_can_change_its_script_and_simulate_a_missing_key():
     assert fake.generate("p", "m") == "recovered"
     assert FakeProvider(ready=False).is_ready() is False
     assert FakeProvider().generate("p", "m") == "{}"
-    assert FakeProvider().models == CHAIN
+    assert FakeProvider().models == DEFAULT_MODELS
 
 
 def load_tests(loader, tests, pattern):
