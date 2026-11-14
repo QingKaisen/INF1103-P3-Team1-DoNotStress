@@ -31,17 +31,22 @@ ANSWERS = dict(
 _ONE_RUN = """
 import json, sys
 sys.path[:0] = [{root!r}, {tests!r}]
-import main
+from make_ai import process_checkin
 from test_frontend import fake_generate
-ok, outcome = main.process_checkin(json.loads({answers!r}), generate_fn=fake_generate,
+ok, outcome = process_checkin(json.loads({answers!r}), generate_fn=fake_generate,
                                    max_attempts=1, retry_delay_sec=0)
 sys.stdout.write(json.dumps([ok, outcome], sort_keys=True))
 """
 
 
+from logic_manager import LogicManager as _LogicManager
+_LOGIC = _LogicManager()
+from data_manager import DataManager
+from make_ai import build_prompt, process_checkin
+
 def _check_in():
     """Run the full AI -> Logic pipeline once with the fake Gemini."""
-    ok, outcome = main.process_checkin(dict(ANSWERS), generate_fn=fake_generate,
+    ok, outcome = process_checkin(dict(ANSWERS), generate_fn=fake_generate,
                                        max_attempts=1, retry_delay_sec=0)
     assert ok, outcome
     return outcome
@@ -69,28 +74,29 @@ def test_separate_processes_give_the_same_outcome():
 
 
 def test_scoring_and_prompt_are_deterministic():
-    first_score = logic_manager.score_answers(ANSWERS)
-    first_prompt = ai_manager.build_prompt(ANSWERS, instructions=logic_manager.scoring_instructions())
+    first_score = _LOGIC.score_answers(ANSWERS)
+    first_prompt = build_prompt(ANSWERS, instructions=_LOGIC.scoring_instructions())
     for _ in range(5):
-        assert logic_manager.score_answers(ANSWERS) == first_score
-        assert ai_manager.build_prompt(
-            ANSWERS, instructions=logic_manager.scoring_instructions()) == first_prompt
+        assert _LOGIC.score_answers(ANSWERS) == first_score
+        assert build_prompt(
+            ANSWERS, instructions=_LOGIC.scoring_instructions()) == first_prompt
 
 
 def test_saved_records_load_the_same_every_time():
     with tempfile.TemporaryDirectory() as temp_dir:
         path = str(Path(temp_dir) / "records.json")
-        assert data_manager.save(_check_in(), path, opt_in=True)["ok"]
+        assert DataManager(path).save(_check_in(), opt_in=True)["ok"]
         before = Path(path).read_text(encoding="utf-8")
-        first = data_manager.load(path)
+        first = DataManager(path).load()
         assert len(first) == 1
-        assert data_manager.load(path) == first
+        assert DataManager(path).load() == first
         # Loading never rewrites the file.
         assert Path(path).read_text(encoding="utf-8") == before
 
 
 def test_gemini_is_asked_for_repeatable_replies():
-    assert ai_manager._DEFAULT_TEMPERATURE == 0.0
+    from ai.gemini_provider import GeminiProvider
+    assert GeminiProvider.TEMPERATURE == 0.0
 
 
 def load_tests(loader, tests, pattern):

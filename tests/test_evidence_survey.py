@@ -15,6 +15,12 @@ from plain_tests import function_suite
 fake_generate = frontend.fake_generate
 
 
+from logic_manager import LogicManager as _LogicManager
+_LOGIC = _LogicManager()
+from io_manager import IOManager as _IOManager
+_IO = _IOManager()
+from make_ai import build_prompt, validate_response
+
 def raw(**changes):
     return dict(student_id='2605581', pss_1=1, pss_2=5, pss_3=5, pss_4=1,
                 sleep_hours_avg=8, sleep_quality=1, pas_workload=1, pas_catchup=1, fin_stress=1,
@@ -27,7 +33,7 @@ MAX_STRESS = dict(pss_1=5, pss_2=1, pss_3=1, pss_4=5, sleep_hours_avg=4, sleep_q
 def record(**changes):
     values=raw()
     values.update(changes)
-    ok, result=io_manager.validate_student_form(values)
+    ok, result=_IO.validate_student_form(values)
     assert ok, result
     return result
 
@@ -35,14 +41,14 @@ def record(**changes):
 def with_score(**changes):
     """io record plus logic_manager's deterministic score of its answers."""
     r=record(**changes)
-    return {**r, **logic_manager.score_answers(r)}
+    return {**r, **_LOGIC.score_answers(r)}
 
 
 def finalised(**changes):
     """io record run through a matching fake Gemini reply, then Logic."""
     r=record(**changes)
-    fields=ai_manager.validate_ai_response(fake_generate(json.dumps(r),None,None))[1]
-    return logic_manager.apply_logic({**r,**fields})
+    fields=validate_response(fake_generate(json.dumps(r),None,None))[1]
+    return _LOGIC.apply_logic({**r,**fields})
 
 
 # --- Scoring ---------------------------------------------------------------
@@ -88,7 +94,7 @@ def test_sleep_hours_stay_hours_and_score_as_stress():
         r=with_score(sleep_hours_avg=hours)
         assert r['sleep_hours_avg'] == hours
         assert r['stress_score'] == round((10+scored)/11,2), hours
-    assert not io_manager.validate_student_form({**raw(),'sleep_hours_avg':6.75})[0]
+    assert not _IO.validate_student_form({**raw(),'sleep_hours_avg':6.75})[0]
     q=survey.QUESTION_MAP['sleep_hours_avg']
     assert (q['kind'],q['min'],q['max'],q['step']) == ('slider',0,14,0.5)
     fin=survey.QUESTION_MAP['fin_stress']
@@ -159,7 +165,7 @@ def test_prompts_and_pss_sentences():
 
 def test_one_based_labels():
     r=with_score(sleep_hours_avg=7.5,sleep_quality=5,fin_stress=1)
-    shown_factors=logic_manager.factor_insights(r,r)
+    shown_factors=_LOGIC.factor_insights(r,r)
     factors={item['title']:item['value'] for item in shown_factors}
     assert factors['Rest & recovery'] == '7.5 hours · Very bad quality'
     assert factors['Money pressures'] == '1/5 · No stress at all'
@@ -171,7 +177,7 @@ def test_one_based_labels():
     flagged={item['title']:item['flagged'] for item in shown_factors}
     assert flagged['Rest & recovery']
     assert not flagged['Money pressures']
-    shown={field['key']:field['value'] for field in io_manager.format_student_record(r)['fields']}
+    shown={field['key']:field['value'] for field in _IO.format_student_record(r)['fields']}
     assert shown['sleep_hours_avg'] == '7.5'
     assert shown['sleep_quality'] == '5 · Very bad'
     assert shown['fin_stress'] == '1 · No stress at all'
@@ -205,23 +211,23 @@ def test_support_mean_and_required_fields():
     assert all(not q.get('optional') for q in survey.QUESTIONS)
     for key in ('pas_catchup','mspss_friends','mspss_family'):
         values=raw();values.pop(key)
-        assert key in io_manager.validate_student_form(values)[1]
+        assert key in _IO.validate_student_form(values)[1]
 
 
 def test_required_and_invalid_answers():
     for q in survey.QUESTIONS:
         for bad in (True, False, [], {}, float('nan'), float('inf'), q['min']-1, q['max']+1, 1.25):
             values=raw(); values[q['key']]=bad
-            assert q['key'] in io_manager.validate_student_form(values)[1]
+            assert q['key'] in _IO.validate_student_form(values)[1]
         values=raw();values.pop(q['key'],None)
-        assert not io_manager.validate_student_form(values)[0], q['key']
+        assert not _IO.validate_student_form(values)[0], q['key']
 
 
 def test_reflection_not_scored_or_sent():
     r=record(feelings_text='PRIVATE REFLECTION: I feel sad and depressed')
     assert finalised(feelings_text='PRIVATE REFLECTION: I feel sad and depressed')['risk_category'] == 'Low'
     assert 'feelings_text' not in r
-    prompt=ai_manager.build_prompt(r)
+    prompt=build_prompt(r)
     assert 'PRIVATE REFLECTION' not in prompt
     assert '2605581' not in prompt
     for key in survey.QUESTION_MAP:assert key in prompt
@@ -251,7 +257,7 @@ def test_ai_score_far_from_answers_is_rejected():
     fields=json.loads(fake_generate(None,None,None))
     fields.update(stress_score=4.5,risk_score=0.875,risk_category='High',
                   soft_label='Please reach out',speak_prominence='high')
-    r=logic_manager.apply_logic({**record(),**fields})
+    r=_LOGIC.apply_logic({**record(),**fields})
     assert not r['ok']
     assert r['error'] == 'score_mismatch'
     assert r['logic_stress_score'] == 1.0
@@ -267,7 +273,7 @@ def test_ai_score_matching_answers_is_kept():
 def test_nonfinite_ai_numbers_rejected():
     for field in ('stress_score','confidence'):
         values=json.loads(fake_generate(None,None,None));values[field]=float('nan')
-        assert not ai_manager.validate_ai_response(values)[0]
+        assert not validate_response(values)[0]
 
 
 # --- Revised Pipeline ------------------------------------------------------

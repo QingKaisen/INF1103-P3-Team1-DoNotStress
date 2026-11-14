@@ -8,9 +8,20 @@ from types import SimpleNamespace
 
 import io_manager
 import survey
-from main import create_app, result_view
+from checkin_service import CheckinService
+from data_manager import DataManager
+from io_manager import IOManager as _IOManager
+from logic_manager import LogicManager as _LogicManager
+from main import create_app
 from test_admin_access import login_admin
 from plain_tests import capture_logs, function_suite
+
+_IO = _IOManager()
+_LOGIC = _LogicManager()
+
+
+def result_view(record, saved=False):
+    return CheckinService(_IO, _LOGIC, DataManager()).result_view(record, saved=saved)
 
 
 # --- Records ---------------------------------------------------------------
@@ -49,9 +60,9 @@ def write_rows(ctx, rows=None):
 def test_seven_digits_starting_with_two():
     with records_app() as ctx:
         for sid in ('2000000','2200000','2703504','2999999',' 2603503 '):
-            assert io_manager.validate_student_id(sid)[0], sid
+            assert _IO.validate_student_id(sid)[0], sid
         for sid in ('1200000','3000000','260350','26035030','2abc503','2１２３４５６',''):
-            assert not io_manager.validate_student_id(sid)[0], sid
+            assert not _IO.validate_student_id(sid)[0], sid
 
 
 def test_corrupt_file_is_backed_up_before_save():
@@ -59,7 +70,7 @@ def test_corrupt_file_is_backed_up_before_save():
             import data_manager
             ctx.path.write_text('[{"student_id": "2603503"', encoding='utf-8')
             with capture_logs('data_manager', level='WARNING'):
-                result = data_manager.save_pending_record({'student_id': '2000123'}, str(ctx.path), opt_in=True)
+                result = DataManager(str(ctx.path)).save_pending_record({'student_id': '2000123'}, opt_in=True)
             assert result['ok']
             backups = list(Path(ctx.temp.name).glob('records.corrupt-*.json'))
             assert len(backups) == 1

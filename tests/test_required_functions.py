@@ -25,6 +25,13 @@ import io_manager
 import logic_manager
 
 
+from logic_manager import LogicManager as _LogicManager
+_LOGIC = _LogicManager()
+from io_manager import IOManager as _IOManager
+_IO = _IOManager()
+from data_manager import DataManager
+from make_ai import analyse_student, call_api, build_prompt, validate_response
+
 def _answers() -> dict:
     """All-3 answers with 6.5 h sleep: average 3.0 (Moderate)."""
     answers = {key: 3 for key in logic_manager.ANSWER_KEYS}
@@ -35,9 +42,9 @@ def _answers() -> dict:
 def _fake_generate(prompt: str, api_key: str, model_name: str) -> str:
     """Fake Gemini: replays the formula on the prompt's answers."""
     answers = json.loads(prompt[prompt.rfind("{"):])
-    scored = logic_manager.scored_items(answers)
-    stress = logic_manager.score_answers(answers)["stress_score"]
-    category = logic_manager.category_for_score(stress)
+    scored = _LOGIC.scored_items(answers)
+    stress = _LOGIC.score_answers(answers)["stress_score"]
+    category = _LOGIC.category_for_score(stress)
     return json.dumps({
         "scored_items": scored,
         "stress_score": stress,
@@ -58,73 +65,69 @@ def _failing_generate(prompt: str, api_key: str, model_name: str) -> str:
 def _enriched() -> dict:
     record = {"student_id": "2605581", "survey_version": "evidence-v3",
               "safety_flag": False, **_answers()}
-    ok, enriched, error = ai_manager.analyse_student(
+    ok, enriched, error = analyse_student(
         record, generate_fn=_fake_generate, max_attempts=1, retry_delay_sec=0)
     assert ok, error
     return enriched
 
 
 def test_call_api_and_validate_with_fake_generate() -> None:
-    prompt = ai_manager.build_prompt(_answers())
-    ok, fields, error = ai_manager.call_api(prompt, generate_fn=_fake_generate)
+    prompt = build_prompt(_answers())
+    ok, fields, error = call_api(prompt, generate_fn=_fake_generate)
     assert ok and error is None
     assert fields["stress_score"] == 3.0
-    ok, data = ai_manager.validate_response(_fake_generate(prompt, "", ""))
+    ok, data = validate_response(_fake_generate(prompt, "", ""))
     assert ok and data["risk_category"] == "Moderate"
 
 
 def test_call_api_timeout_does_not_crash() -> None:
-    ok, fields, error = ai_manager.call_api("prompt", generate_fn=_failing_generate)
+    ok, fields, error = call_api("prompt", generate_fn=_failing_generate)
     assert not ok and fields is None
     assert error["error_code"] in ai_manager.AI_ERROR_CODES
 
 
-def test_parse_response_handles_bad_formats() -> None:
-    assert ai_manager.parse_response('```json\n{"a": 1}\n```') == {"a": 1}
-    assert ai_manager.parse_response("not json") is None
-    assert ai_manager.parse_response("{broken") is None
-    assert ai_manager.parse_response(None) is None
-
-
 def test_validate_response_rejects_malformed() -> None:
-    assert ai_manager.validate_response({})[0] is False
-    assert ai_manager.validate_response("[]")[0] is False
+    assert validate_response("not json")[0] is False
+    assert validate_response("{broken")[0] is False
+    assert validate_response(None)[0] is False
+    assert validate_response({})[0] is False
+    assert validate_response("[]")[0] is False
 
 
 def test_evaluate_score_route() -> None:
     record = _enriched()
-    decision = logic_manager.evaluate(record)
+    decision = _LOGIC.evaluate(record)
     assert decision["ok"] is True
-    assert logic_manager.score(record) == record["stress_score"]
-    assert logic_manager.route(decision) == "Moderate"
+    assert _LOGIC.score(record) == record["stress_score"]
+    assert _LOGIC.route(decision) == "Moderate"
 
 
 def test_score_rejects_mismatched_ai_score() -> None:
     record = dict(_enriched(), stress_score=4.5)
-    assert logic_manager.score(record) is None
-    assert logic_manager.route(logic_manager.evaluate(record)) == "unavailable"
+    assert _LOGIC.score(record) is None
+    assert _LOGIC.route(_LOGIC.evaluate(record)) == "unavailable"
 
 
 def test_save_load_query_and_missing_or_corrupt_file() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "records.json")
-        assert data_manager.load(path) == []
-        record = logic_manager.evaluate(_enriched())
-        assert data_manager.save(record, path, opt_in=True)["ok"] is True
-        assert len(data_manager.load(path)) == 1
-        assert len(data_manager.query(lambda r: r["risk_category"] == "Moderate", path)) == 1
-        assert data_manager.query(lambda r: False, path) == []
+        assert DataManager(path).load() == []
+        record = _LOGIC.evaluate(_enriched())
+        assert DataManager(path).save(record, opt_in=True)["ok"] is True
+        assert len(DataManager(path).load()) == 1
+        assert len(DataManager(path).query(lambda r: r["risk_category"] == "Moderate")) == 1
+        assert DataManager(path).query(lambda r: False) == []
         Path(path).write_text("{not json", encoding="utf-8")
-        assert data_manager.load(path) == []
+        assert DataManager(path).load() == []
 
 
 def test_display_functions_print() -> None:
     buffer = io.StringIO()
     with redirect_stdout(buffer):
-        io_manager.display_record(_answers())
-        io_manager.display_list([])
-        io_manager.display_result(logic_manager.evaluate(_enriched()))
-        io_manager.display_result({"ok": False, "error_code": "timeout"})
+        _IO.display_record(_answers())
+        _IO.display_list([])
+        _IO.display_result(_LOGIC.evaluate(_enriched()))
+        _IO.display_result({"ok": False, "error_code": "timeout"})
     assert "Stress score: 3.0" in buffer.getvalue()
 
 

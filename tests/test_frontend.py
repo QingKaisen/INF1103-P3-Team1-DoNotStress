@@ -12,6 +12,9 @@ from main import create_app
 from plain_tests import case, function_suite
 
 
+from logic_manager import LogicManager as _LogicManager
+_LOGIC = _LogicManager()
+
 def fake_generate(prompt, api_key, model_name):
     # Replay the formula on the answers in the prompt so the stub matches
     # whatever the form submitted. No network call.
@@ -21,9 +24,9 @@ def fake_generate(prompt, api_key, model_name):
     else:
         answers = {key: 3 for key in logic_manager.ANSWER_KEYS}
         answers['sleep_hours_avg'] = 6.5
-    scored = logic_manager.scored_items(answers)
-    stress = logic_manager.score_answers(answers)['stress_score']
-    category = logic_manager.category_for_score(stress)
+    scored = _LOGIC.scored_items(answers)
+    stress = _LOGIC.score_answers(answers)['stress_score']
+    category = _LOGIC.category_for_score(stress)
     label = logic_manager._CATEGORY_TO_LABEL[category]
     prominence = logic_manager._CATEGORY_TO_PROMINENCE[category]
     return json.dumps({

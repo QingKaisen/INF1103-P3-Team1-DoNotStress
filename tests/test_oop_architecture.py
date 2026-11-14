@@ -67,11 +67,11 @@ def test_survey_policy_is_a_real_object_shared_with_io_manager():
                                   safety_patterns=survey.SAFETY_PATTERNS)
     io = IOManager(definition=definition)
     assert io.survey is definition
-    assert definition.public_config() == survey.public_config()
+    assert definition.public_config() == survey.DEFAULT_SURVEY.public_config()
     assert definition.safety_check('I want to die') is True
     assert definition.safety_check('Learning is tiring') is False
     assert definition.validate_question('3', survey.QUESTION_MAP['pss_1']) == (
-        survey.validate_question('3', survey.QUESTION_MAP['pss_1']))
+        survey.DEFAULT_SURVEY.validate_question('3', survey.QUESTION_MAP['pss_1']))
 
 
 def test_io_manager_is_real_instance_with_configurable_cli_io():

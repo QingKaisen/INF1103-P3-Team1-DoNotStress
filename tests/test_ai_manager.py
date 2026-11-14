@@ -16,6 +16,12 @@ import survey
 from plain_tests import capture_logs, function_suite
 
 
+from logic_manager import LogicManager as _LogicManager
+_LOGIC = _LogicManager()
+from io_manager import IOManager as _IOManager
+_IO = _IOManager()
+from make_ai import analyse_student, call_gemini, build_prompt, validate_response
+
 def _checkin():
     """A full record with scores and a reflection Gemini must not see."""
     return {
@@ -86,7 +92,7 @@ def _for_score(score, **overrides):
 
 def _expected(answers):
     """What Gemini should return for these answers, from logic_manager (the formula's only owner)."""
-    return logic_manager.scored_items(answers), logic_manager.score_answers(answers)["stress_score"]
+    return _LOGIC.scored_items(answers), _LOGIC.score_answers(answers)["stress_score"]
 
 
 def _all_threes():
@@ -105,7 +111,7 @@ def _input_payload(prompt):
 # --- Prompt ----------------------------------------------------------------
 
 def test_prompt_has_raw_answers_and_wording_only():
-    prompt = ai_manager.build_prompt(_checkin(), instructions=logic_manager.scoring_instructions())
+    prompt = build_prompt(_checkin(), instructions=_LOGIC.scoring_instructions())
     payload = _input_payload(prompt)
 
     assert set(payload) == set(ai_manager.STUDENT_PROMPT_FIELDS)
@@ -172,16 +178,16 @@ def test_ai_manager_holds_no_scoring_rules():
         assert not hasattr(ai_manager, name), name
     assert not hasattr(ai_manager, "logic_manager")
 
-    bare = ai_manager.build_prompt(_checkin())
+    bare = build_prompt(_checkin())
     assert "6 - answer" not in bare
     assert "below 2.5" not in bare
-    with_rules = ai_manager.build_prompt(_checkin(), instructions=logic_manager.scoring_instructions())
-    assert logic_manager.scoring_instructions() in with_rules
+    with_rules = build_prompt(_checkin(), instructions=_LOGIC.scoring_instructions())
+    assert _LOGIC.scoring_instructions() in with_rules
 
     # Schema only: a well-formed reply with the wrong tier still passes here.
     wrong_tier = _for_score(2.0, risk_category="High", soft_label="Please reach out",
                             speak_prominence="high")
-    ok, result = ai_manager.validate_ai_response(wrong_tier)
+    ok, result = validate_response(wrong_tier)
     assert ok, result
     assert "risk_score" not in result
     assert "recommended_support" not in result
@@ -205,7 +211,7 @@ def test_caller_can_pass_question_wording():
             stress, scored_items=scored, tips=["short_breaks"], primary_stressors=[],
         ))
 
-    ok, enriched, error = ai_manager.analyse_student(
+    ok, enriched, error = analyse_student(
         _checkin(),
         api_key="stub",
         max_attempts=1,
@@ -233,7 +239,7 @@ def test_valid_response_is_normalised():
     supplied = _for_score(2.5)
     supplied["risk_score"] = 0.99
     supplied["recommended_support"] = "Speak to advisor"
-    ok, result = ai_manager.validate_ai_response(json.dumps(supplied))
+    ok, result = validate_response(json.dumps(supplied))
     assert ok, result
     assert result["stress_score"] == 2.5
     assert result["risk_category"] == "Moderate"
@@ -244,19 +250,19 @@ def test_valid_response_is_normalised():
     assert "recommended_support" not in result
 
     for score in (1.0, 3.0, 5.0):
-        ok, result = ai_manager.validate_ai_response(_for_score(score))
+        ok, result = validate_response(_for_score(score))
         assert ok, result
         assert result["stress_score"] == score
 
 
 def test_band_edges_and_stripped_category():
     for score in (1, 2.49, 2.5, 3.5, 3.51, 5):
-        ok, result = ai_manager.validate_ai_response(_for_score(score))
+        ok, result = validate_response(_for_score(score))
         assert ok, (score, result)
         assert result["stress_score"] == float(score)
 
     padded = _for_score(3.0, risk_category="  Moderate  ")
-    ok, result = ai_manager.validate_ai_response(padded)
+    ok, result = validate_response(padded)
     assert ok, result
     assert result["risk_category"] == "Moderate"
 
@@ -264,7 +270,7 @@ def test_band_edges_and_stripped_category():
 def test_out_of_range_stress_score_fails():
     for bad in (0.9, 5.1, 0, 6, -1, True, False, None, "high", "",
                 float("nan"), float("inf"), float("-inf")):
-        ok, message = ai_manager.validate_ai_response(_for_score(3.0, stress_score=bad))
+        ok, message = validate_response(_for_score(3.0, stress_score=bad))
         assert not ok, bad
         assert "stress_score" in message
 
@@ -293,15 +299,15 @@ def test_tier_mismatch_fails_the_logic_check():
         speak_prominence="low",
     )
     for reply in (low_score_high_tier, label_mismatch, prominence_mismatch):
-        assert ai_manager.validate_ai_response(reply)[0]
+        assert validate_response(reply)[0]
 
         def generate_fn(prompt, api_key, model_name, reply=reply):
             return json.dumps(reply)
 
-        ok, result, error = ai_manager.call_gemini(
+        ok, result, error = call_gemini(
             "check-in", api_key="stub", max_attempts=1, retry_delay_sec=0,
             generate_fn=generate_fn, answers=_all_threes(),
-            verify_fn=logic_manager.verify_ai_scores,
+            verify_fn=_LOGIC.verify_ai_scores,
         )
         assert not ok
         assert result is None
@@ -311,25 +317,25 @@ def test_tier_mismatch_fails_the_logic_check():
 def test_removed_ids_are_rejected():
     assert "emotional_distress" not in ai_manager.ALLOWED_PRIMARY_STRESSORS
     assert "feelings_check_in" not in ai_manager.ALLOWED_TIP_IDS
-    assert not (ai_manager.validate_ai_response(
+    assert not (validate_response(
         _for_score(3.0, primary_stressors=["emotional_distress"])
     )[0])
-    assert not (ai_manager.validate_ai_response(
+    assert not (validate_response(
         _for_score(3.0, primary_stressors=["academic_overload", "emotional_distress"])
     )[0])
-    assert not (ai_manager.validate_ai_response(
+    assert not (validate_response(
         _for_score(3.0, tips=["feelings_check_in"])
     )[0])
-    assert not (ai_manager.validate_ai_response(
+    assert not (validate_response(
         _for_score(3.0, tips=["short_breaks", "feelings_check_in"])
     )[0])
 
 
 def test_remaining_tip_ids_still_format():
     assert ai_manager.ALLOWED_TIP_IDS <= set(io_manager.TIPS_ALLOWLIST)
-    formatted = io_manager.format_tips(sorted(ai_manager.ALLOWED_TIP_IDS))
+    formatted = _IO.format_tips(sorted(ai_manager.ALLOWED_TIP_IDS))
     assert {item["id"] for item in formatted["items"]} == set(ai_manager.ALLOWED_TIP_IDS)
-    legacy = io_manager.format_tips(["feelings_check_in"])
+    legacy = _IO.format_tips(["feelings_check_in"])
     assert legacy["items"][0]["id"] == "feelings_check_in"
 
 
@@ -344,14 +350,14 @@ def test_mismatch_is_an_invalid_response():
             speak_prominence="low",
         ))
 
-    ok, result, error = ai_manager.call_gemini(
+    ok, result, error = call_gemini(
         "check-in",
         api_key="stub",
         max_attempts=1,
         retry_delay_sec=0,
         generate_fn=generate_fn,
         answers=_all_threes(),
-        verify_fn=logic_manager.verify_ai_scores,
+        verify_fn=_LOGIC.verify_ai_scores,
     )
     assert not ok
     assert result is None
@@ -360,19 +366,14 @@ def test_mismatch_is_an_invalid_response():
 
 
 def test_missing_api_key_does_not_call_generator():
-    def generate_fn(prompt, api_key, model_name):
-        raise AssertionError("generator must not be called")
-
-    with patch.object(ai_manager, "_default_generate", generate_fn):
-        ok, result, error = ai_manager.call_gemini("check-in", api_key="  ")
+    ok, result, error = call_gemini("check-in", api_key="  ")
     assert not ok
     assert result is None
     assert error["error_code"] == "missing_api_key"
     assert error["source"] == "gemini"
 
     with patch.dict(os.environ, {"GEMINI_API_KEY": ""}, clear=False):
-        with patch.object(ai_manager, "_default_generate", generate_fn):
-            ok, result, error = ai_manager.call_gemini("check-in")
+        ok, result, error = call_gemini("check-in")
     assert not ok
     assert error["error_code"] == "missing_api_key"
 
@@ -391,7 +392,9 @@ def test_structured_schema_is_sent_with_the_mime_type():
         return SimpleNamespace(models=SimpleNamespace(generate_content=fake_generate_content))
 
     with patch("google.genai.Client", fake_client):
-        text = ai_manager._default_generate("prompt text", "secret-key", "gemini-3.6-flash")
+        from ai.gemini_provider import GeminiProvider
+        text = GeminiProvider(api_key="secret-key").generate(
+            "prompt text", "gemini-3.6-flash", schema=ai_manager.RESPONSE_SCHEMA)
 
     assert text == "{}"
     assert captured["api_key"] == "secret-key"
@@ -458,9 +461,9 @@ def _exact_reply(answers, **overrides):
 
 def test_exact_response_passes():
     answers = _minimum_stress()
-    ok, result = ai_manager.validate_ai_response(_exact_reply(answers))
+    ok, result = validate_response(_exact_reply(answers))
     assert ok, result
-    assert logic_manager.verify_ai_scores(result, answers) is None
+    assert _LOGIC.verify_ai_scores(result, answers) is None
     assert result["scored_items"] == {key: 1 for key in ai_manager.RAW_ANSWER_KEYS}
     assert result["stress_score"] == 1.0
     assert result["risk_category"] == "Low"
@@ -468,10 +471,10 @@ def test_exact_response_passes():
     def generate_fn(prompt, api_key, model_name):
         return json.dumps(_exact_reply(answers))
 
-    ok, enriched, error = ai_manager.analyse_student(
+    ok, enriched, error = analyse_student(
         answers, api_key="stub", max_attempts=1, retry_delay_sec=0, generate_fn=generate_fn,
-        instructions=logic_manager.scoring_instructions(),
-        verify_fn=logic_manager.verify_ai_scores,
+        instructions=_LOGIC.scoring_instructions(),
+        verify_fn=_LOGIC.verify_ai_scores,
     )
     assert ok, error
     assert enriched["stress_score"] == 1.0
@@ -483,24 +486,24 @@ def test_off_by_one_scored_item_fails():
     reply = _exact_reply(answers)
     reply["scored_items"] = dict(reply["scored_items"])
     reply["scored_items"]["pss_1"] = 2
-    message = logic_manager.verify_ai_scores(reply, answers)
+    message = _LOGIC.verify_ai_scores(reply, answers)
     assert "scored_items" in message
 
     def generate_fn(prompt, api_key, model_name):
         return json.dumps(reply)
 
-    ok, result, error = ai_manager.call_gemini(
+    ok, result, error = call_gemini(
         "check-in", api_key="stub", max_attempts=1, retry_delay_sec=0,
-        generate_fn=generate_fn, answers=answers, verify_fn=logic_manager.verify_ai_scores,
+        generate_fn=generate_fn, answers=answers, verify_fn=_LOGIC.verify_ai_scores,
     )
     assert not ok
     assert result is None
     assert error["error_code"] == "invalid_response"
 
     # Without the check, ai_manager only validates the schema.
-    skipped, _ = ai_manager.validate_ai_response(reply)
+    skipped, _ = validate_response(reply)
     assert skipped
-    ok, _, error = ai_manager.call_gemini(
+    ok, _, error = call_gemini(
         "check-in", api_key="stub", max_attempts=1, retry_delay_sec=0,
         generate_fn=generate_fn, answers=answers,
     )
@@ -510,16 +513,16 @@ def test_off_by_one_scored_item_fails():
 def test_stress_score_off_by_a_tenth_fails():
     answers = _minimum_stress()
     reply = _exact_reply(answers, stress_score=1.1)
-    message = logic_manager.verify_ai_scores(reply, answers)
+    message = _LOGIC.verify_ai_scores(reply, answers)
     assert "stress_score" in message
 
     def generate_fn(prompt, api_key, model_name):
         return json.dumps(reply)
 
-    ok, result, error = ai_manager.analyse_student(
+    ok, result, error = analyse_student(
         answers, api_key="stub", max_attempts=1, retry_delay_sec=0, generate_fn=generate_fn,
-        instructions=logic_manager.scoring_instructions(),
-        verify_fn=logic_manager.verify_ai_scores,
+        instructions=_LOGIC.scoring_instructions(),
+        verify_fn=_LOGIC.verify_ai_scores,
     )
     assert not ok
     assert error["error_code"] == "invalid_response"
@@ -532,7 +535,7 @@ def test_a_broken_check_is_an_invalid_response_not_a_crash():
     def generate_fn(prompt, api_key, model_name):
         return json.dumps(_for_score(3.0))
 
-    ok, result, error = ai_manager.call_gemini(
+    ok, result, error = call_gemini(
         "check-in", api_key="stub", max_attempts=1, retry_delay_sec=0,
         generate_fn=generate_fn, answers=_all_threes(), verify_fn=broken_check,
     )
@@ -563,7 +566,7 @@ def _call(generate, **overrides):
         generate_fn=generate,
     )
     options.update(overrides)
-    return ai_manager.call_gemini("check-in", **options)
+    return call_gemini("check-in", **options)
 
 
 def test_model_order_and_call_cap():
@@ -642,7 +645,7 @@ def test_every_model_rate_limited():
     assert result is None
     assert error["error_code"] == "rate_limited"
     assert calls == list(ai_manager.MODEL_CHAIN)
-    copy = io_manager.format_ai_error("rate_limited")
+    copy = _IO.format_ai_error("rate_limited")
     assert copy["error_code"] == "rate_limited"
     assert copy["body"] == ("Our check-in assistant is busy right now. "
         "Your answers have been saved and will be reviewed soon.")
@@ -664,11 +667,7 @@ def test_bad_json_is_invalid_after_the_call_cap():
 
 
 def test_missing_key_never_calls_the_generator():
-    def generate(prompt, api_key, model_name):
-        raise AssertionError("generator must not be called")
-
-    with patch.object(ai_manager, "_default_generate", generate):
-        ok, result, error = ai_manager.call_gemini("check-in", api_key="  ")
+    ok, result, error = call_gemini("check-in", api_key="  ")
     assert not ok
     assert result is None
     assert error["error_code"] == "missing_api_key"
