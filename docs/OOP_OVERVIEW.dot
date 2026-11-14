@@ -1,0 +1,25 @@
+digraph OOP { graph [rankdir=LR, bgcolor=white, dpi=160, nodesep=0.65, ranksep=0.85, splines=polyline];
+node [shape=record, fontname="Helvetica", fontsize=11, style="rounded,filled", fillcolor="#f7fafc", color="#64748b"];
+edge [fontname="Helvetica",fontsize=9,color="#54657a"];
+Controller [label="{WebController|+ submit_checkin()\l+ saved_records()\l+ records_summary()\l}"];
+Service [label="{CheckinService|+ process_checkin()\l+ result_view()\l+ summarize_records()\l}",fillcolor="#e0f2fe"];
+IO [label="{IOManager|+ validate_student_form()\l+ format_*()\l}"];
+AI [label="{AIManager|+ build_prompt()\l+ call_api()\l+ analyse_student()\l}"];
+Logic [label="{LogicManager|+ apply_logic()\l+ verify_ai_scores()\l}"];
+Data [label="{DataManager|+ save_record()\l+ load_all_records()\l}"];
+AIProvider [label="{AIProvider (ABC)|+ generate()\l+ models\l}",fillcolor="#fef9c3"];
+Storage [label="{StorageBackend (ABC)|+ load()\l+ append()\l+ replace()\l}",fillcolor="#fef9c3"];
+Gemini [label="{GeminiProvider|+ generate()\l}"];
+JSON [label="{JSONStorage|+ append()\l+ replace()\l}"];
+Report [label="{CohortReport|+ build()\l}"];
+Controller -> Service [label="1:1"];
+Service -> IO [label="1:1"];
+Service -> Logic [label="1:1"];
+Service -> Data [label="1:1"];
+Service -> Report [label="1:1"];
+Service -> AI [style=dashed,label="per request"];
+AI -> AIProvider [label="injected"];
+AIProvider -> Gemini [arrowhead=empty,dir=back];
+Data -> Storage [label="injected"];
+Storage -> JSON [arrowhead=empty,dir=back];
+}

@@ -44,9 +44,9 @@ def test_student_is_default_and_navigation_hides_records():
         assert '/ campus' not in text
         assert '>Home<' in text
         assert '>Overview<' not in text
-        assert 'Need to talk?' in text
-        assert 'A guide, not a diagnosis.' in text
-        assert 'Immediate crises: If you face an urgent emergency outside of school hours, you can use the 24-hour helpline (6592 2030) or reach out to national helplines such as Samaritans of Singapore (1-767) or emergency services (995 / 999).' in text
+        assert 'Support contacts' in text
+        assert 'Wellbeing guidance only. Not a medical diagnosis.' in text
+        assert 'For urgent emergencies outside school hours, contact the 24-hour helpline (6592 2030), Samaritans of Singapore (1767), or emergency services (995 / 999).' in text
         assert 'href="tel:65922030"' in text
         assert 'href="tel:1767"' in text
         assert 'href="tel:1771"' in text
@@ -62,7 +62,7 @@ def test_student_is_default_and_navigation_hides_records():
 
 def test_direct_page_redirects_and_api_never_reads_records():
     with admin_app() as ctx:
-        with patch('main.data_manager.load_all_records') as load:
+        with patch.object(ctx.app.extensions['data_manager'], 'load_all_records') as load:
             response = ctx.client.get('/api/records?student_id=26&role=admin')
             assert response.status_code == 401
             assert 'records' not in response.json
@@ -101,7 +101,7 @@ def test_admin_sees_records_and_new_client_stays_student():
         assert 'Sign out' in text
         assert 'data-nav="records"' in text
         assert 'DoNotStress2026!' not in text
-        with patch('main.data_manager.load_all_records',return_value={'ok':True,'records':[]}):
+        with patch.object(ctx.app.extensions['data_manager'], 'load_all_records', return_value={'ok':True,'records':[]}):
             assert ctx.client.get('/api/records').status_code == 200
         assert ctx.app.test_client().get('/api/records').status_code == 401
 
@@ -118,7 +118,7 @@ def test_admin_keeps_records_from_home_without_signing_in_again():
         records=ctx.client.get('/records')
         assert records.status_code == 200
         assert 'data-nav="records"' in records.get_data(as_text=True)
-        with patch('main.data_manager.load_all_records',return_value={'ok':True,'records':[]}):
+        with patch.object(ctx.app.extensions['data_manager'], 'load_all_records', return_value={'ok':True,'records':[]}):
             assert ctx.client.get('/api/records').status_code == 200
 
 

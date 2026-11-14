@@ -17,4 +17,4 @@ class ScoreValidator(RangeValidator):
     def __init__(self) -> None:
         super().__init__(
             "stress_score", self.MINIMUM, self.MAXIMUM,
-            "Mean of the converted values, rounded to 2 decimal places.")
+            "Mean of the 11 converted values, rounded to 2 decimal places.")

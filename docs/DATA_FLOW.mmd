@@ -1,0 +1,22 @@
+flowchart LR
+    Student[Student browser] --> HTTP[WebController / Flask]
+    HTTP --> IO[IOManager: validate inputs]
+    IO --> SVC[CheckinService]
+    SVC --> AI[AIManager: prompt, retries, JSON schema]
+    AI --> Contract{{AIProvider interface}}
+    Contract --> Gemini[GeminiProvider: live API]
+    Contract --> Fake[FunctionProvider: tests]
+    AI -->|validated AI JSON| Logic[LogicManager: deterministic audit, BusinessRule polymorphism]
+    Logic -->|evaluated| Data[DataManager: opt-in, privacy, filter]
+    AI -->|API failure; no evaluated result| Pending[Pending/Retry path]
+    Pending --> Data
+    Data --> Backend{{StorageBackend contract}}
+    Backend --> File[JSONStorage: atomic JSON file]
+    Backend --> Memory[In-memory test backend]
+    Logic --> Result[Allow-listed student result]
+    Result --> HTTP
+    Admin[Signed-in admin] --> HTTP
+    HTTP -->|authorised| Data
+    Data --> Cohort[CohortReport: anonymised counts, means, tiers]
+    Cohort --> HTTP
+    HTTP -->|summary without IDs or text| Admin

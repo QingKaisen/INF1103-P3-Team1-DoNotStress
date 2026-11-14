@@ -140,8 +140,9 @@ def test_prompts_and_pss_sentences():
     assert all('source' not in section for section in survey.SECTIONS)
     assert all('card' not in item for item in survey.QUESTIONS)
     page=(Path(__file__).resolve().parents[1]/'static'/'campus.js').read_text(encoding='utf-8')
-    assert 'Backed by research' in page
-    assert 'ds-source' not in page
+    assert 'Grounded in validated instruments' in page
+    assert 'class="ds-source"' not in page
+    assert 'ds-sources' in page
     assert 'cardText' not in page
     assert 'team wording' not in page
     for key, prompt in prompts.items():

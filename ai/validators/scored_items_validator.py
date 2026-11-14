@@ -9,9 +9,11 @@ from json_types import JSONObject, JSONValue
 class ScoredItemsValidator(ResponseValidator):
     """The answers converted onto the 1–5 stress scale, one int per key."""
 
-    def __init__(self, keys: tuple[str, ...]) -> None:
+    def __init__(self, keys: tuple[str, ...], description: str = (
+            "The answers converted onto the 1-5 stress scale.")) -> None:
         super().__init__("scored_items")
         self.__keys: tuple[str, ...] = keys
+        self.__description: str = description
 
     def validate(self, value: object) -> tuple[bool, JSONValue]:
         if not isinstance(value, dict):
@@ -32,7 +34,7 @@ class ScoredItemsValidator(ResponseValidator):
     def schema(self) -> JSONObject:
         return {
             "type": "OBJECT",
-            "description": "The answers converted onto the 1-5 stress scale.",
+            "description": self.__description,
             "propertyOrdering": list(self.__keys),
             "required": list(self.__keys),
             "properties": {

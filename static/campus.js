@@ -15,7 +15,7 @@
   const reviewStep = chapters.length;
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   function plant(g=1){return `<div class="ds-plant" aria-hidden="true" style="--grow:${g}"><div class="ds-stem"><div class="ds-leaf"></div><div class="ds-leaf r"></div><div class="ds-leaf s"></div></div><div class="ds-pot"></div></div>`}
-function home(){main.innerHTML=`<div class="ds-hero"><section><span class="ds-pill">✦ A small pause. A fresh perspective.</span><h1>Uni is a lot.<br>Let's check in<br><em style="font-family:Georgia,serif;font-weight:400">with you.</em></h1><p>Sleep, deadlines, life. Make a little room to notice how you're doing — and find your next small step.</p><div class="ds-actions"><button class="ds-primary" data-action="start">Start my check-in <span>↗</span></button><span class="ds-note">11 core questions · 6 chapters<br>Go at your own pace</span></div></section><div class="ds-art ds-companion"><div class="ds-orbit"></div><span class="ds-float a">☾ Rest counts, too.</span><span class="ds-float b">One thing at a time.</span><span class="ds-float c">✦ Showing up is enough.</span>${plant()}<div class="ds-ground"></div><span class="ds-art-label">Meet your little growth buddy</span></div></div><div class="ds-bottom"><section class="ds-feature"><span class="ds-num">01 / NOTICE</span><h3>A check-in, on your terms.</h3><p>Simple taps and sliders. No right answers, no pressure to feel a certain way.</p></section><section class="ds-feature"><span class="ds-num">02 / UNDERSTAND</span><h3>See the bigger picture.</h3><p>Bring your academic load and everyday wellbeing into one view.</p></section><section class="ds-feature"><span class="ds-num">03 / RESET</span><h3>Pick one small next step.</h3><p>Leave with a manageable plan.</p></section></div><section class="ds-research"><h2>Backed by research</h2><p>Every question in this check-in is adapted from established, peer-reviewed questionnaires on stress, sleep, study load, finances and social support.</p><p>Sources: Cohen et al. (1983); Buysse et al. (1989); Bedewy &amp; Gabriel (2015); Prawitz et al. (2006); Zimet et al. (1988).</p></section>`}
+function home(){main.innerHTML=`<section class="ds-hero-video"><video class="ds-video" autoplay muted loop playsinline poster="/static/video/poster.jpg"><source src="/static/video/hero.mp4" type="video/mp4"></video><div class="ds-video-overlay"><div class="ds-video-content"><p class="ds-kicker">Student wellbeing</p><h1>A private stress check-in for SIT students.</h1><p>Notice how stress, sleep, study load and support are affecting you. Get a structured summary and a few practical next steps. Not a diagnosis.</p><div class="ds-actions"><button class="ds-primary" data-action="start">Start check-in</button><a class="ds-secondary" href="mailto:SITCounselling@SingaporeTech.edu.sg">Talk to SIT Counselling</a></div><p class="ds-note">11 validated questions · about 3 minutes · your student ID is never sent to the AI</p></div></div></section><section class="ds-hero"><div><p class="ds-kicker">What this offers</p><h2>Early support, grounded in research.</h2><p>Validated questions on stress, sleep, study load, finances and support. A structured summary and practical next steps. Wellbeing guidance only.</p></div><aside class="ds-aside"><h2>What you can expect</h2><ol class="ds-steps"><li><strong>Private answers</strong><span>Research-based questions on stress, rest, study, finances and support.</span></li><li><strong>Clear summary</strong><span>A structured score, tier and suggestions. Wellbeing guidance only.</span></li><li><strong>Support nearby</strong><span>SIT Counselling and national helplines are always one tap away.</span></li></ol></aside></section><section class="ds-bottom"><article class="ds-feature"><span class="ds-num">01</span><h3>Early check-in</h3><p>Spot building stress before it affects studies, sleep or wellbeing.</p></article><article class="ds-feature"><span class="ds-num">02</span><h3>Research-based</h3><p>Questions adapted from PSS-4, PSQI, PAS, IFDFW and MSPSS instruments.</p></article><article class="ds-feature"><span class="ds-num">03</span><h3>Privacy first</h3><p>Your ID stays with SIT staff. It is never included in the AI request.</p></article></section><section class="ds-research"><h2>Grounded in validated instruments</h2><p>Results are adapted scores for guidance, not clinical PSS-4, PSQI or MSPSS diagnoses.</p><p class="ds-sources">Sources: Cohen et al. (1983); Buysse et al. (1989); Bedewy & Gabriel (2015); Prawitz et al. (2006); Zimet et al. (1988).</p></section>`}
   function field(label, id, control, help='') {
     return `<div class="ds-field"><label class="ds-label" for="${id}">${label}</label>${control}<div class="ds-help">${help}</div></div>`;
   }
@@ -70,9 +70,9 @@ function home(){main.innerHTML=`<div class="ds-hero"><section><span class="ds-pi
       ${reflectionSafety()?safetyPrompt():''}
       <div class="ds-why"><strong>What happens next</strong><p>After you submit, we'll look at your answers and share a few suggestions that may help. Only SIT wellbeing staff can see your ID, and it's never sent to the AI. Anything you write in the reflection box is not stored. This check-in isn't a diagnosis.</p></div>`;
     }
-    main.innerHTML=`<div class="ds-journey"><aside class="ds-rail"><div class="ds-kicker">Your little reset</div>
+    main.innerHTML=`<div class="ds-journey"><aside class="ds-rail"><div class="ds-kicker">Chapters</div>
       ${chapters.map((title,i)=>`<div class="ds-stop ${i===step?'current':i<step?'done':''}"><b>${i<step?'✓':i+1}</b><span>${escape(title)}</span></div>`).join('')}
-      <div class="ds-mini ds-companion">${plant(.45+Math.min(step,reviewStep)*.09)}<h3>A little room to grow.</h3><p>Your plant grows with participation, whatever your answers.</p></div></aside>
+      <div class="ds-progress-note"><strong>${Math.round(step/reviewStep*100)}%</strong><span>complete</span></div></aside>
       <section><div class="ds-kicker">${step===reviewStep?'Review your check-in':`Chapter ${step+1} of ${reviewStep} · ${escape(chapters[step])}`}</div>
       <div class="ds-track" role="progressbar" aria-label="Chapters completed" aria-valuemin="0" aria-valuemax="${reviewStep}" aria-valuenow="${step}"><div style="width:${step/reviewStep*100}%"></div></div>
       ${content}<div class="ds-error" role="alert" id="ds-error"></div><div id="ds-failure-support"></div>
@@ -99,9 +99,9 @@ function home(){main.innerHTML=`<div class="ds-hero"><section><span class="ds-pi
   function result() {
     if (!assessment) {page='checkin';checkin();return;}
     main.innerHTML = `<span class="ds-pill">✦ Check-in complete</span><div class="ds-result"><section>
-      <h2>You don't have to do<br>everything at once.</h2><p>A little perspective, and a small step forward.</p>
+      <h2>You don't have to do<br>everything at once.</h2><p>A little perspective, a few suggestions, and support if you want it.</p>
       <div class="ds-result-hero" data-risk="${riskClass(assessment.insights?.risk_category)}"><div class="ds-kicker">Your check-in</div><h2>${escape(assessment.soft.heading)}</h2>
-      <p>${escape(assessment.soft.body)}</p><div class="ds-note">A wellbeing check-in, not a medical diagnosis.</div></div>
+      <p>${escape(assessment.soft.body)}</p><div class="ds-note">Wellbeing guidance, not a medical diagnosis. Your ID was not sent to the AI.</div></div>
       ${insightsPanel()}
       <h3>${escape(assessment.tips.heading)}</h3><p>A few ideas that might help.</p>
       <ul class="ds-suggestions">${assessment.tips.items.map(tip=>`<li>${escape(tip.text)}</li>`).join('')}</ul>
@@ -169,7 +169,7 @@ function home(){main.innerHTML=`<div class="ds-hero"><section><span class="ds-pi
       return `<th scope="col"${kind==='eq'?' class="ds-eq"':''}${title}>${label}</th>`;
     }).join('');
     const colgroup=`<colgroup>${columns.map(([,kind])=>`<col class="ds-col-${kind}">`).join('')}</colgroup>`;
-    main.innerHTML=`<section><span class="ds-pill">Check-in history</span><h2>Saved student check-ins.</h2><p>Explore saved records by student, tier, or cohort.</p>
+    main.innerHTML=`<section><span class="ds-pill">Staff view</span><h2>Saved student check-ins.</h2><p>For SIT wellbeing staff. Search by student ID, tier, or cohort. Student IDs are visible here only and are never sent to the AI.</p>
       <div class="ds-records-toolbar">
       <div class="ds-record-filters">
         <label>Student ID<input class="ds-input" id="ds-record-search" type="search" inputmode="numeric" placeholder="Search all or part of an ID" value="${escape(recordFilters.student_id)}"></label>
@@ -179,11 +179,28 @@ function home(){main.innerHTML=`<div class="ds-hero"><section><span class="ds-pi
       </div>
       <p id="ds-record-status" role="status" aria-live="polite"></p>
       </div>
+      <section class="ds-cohort" id="ds-record-summary" aria-label="Cohort summary" aria-live="polite"></section>
       <div class="ds-record-table" role="region" aria-label="Saved check-ins table" tabindex="0">
       <table><caption>All saved student check-ins</caption>${colgroup}<thead><tr>${heads}</tr></thead><tbody id="ds-record-rows"></tbody></table></div>
       <p class="ds-record-note">Answers are on a 1–5 scale, where 1 is the lowest. Sleep is shown in hours. All times are in Singapore time (SGT).</p>
       <button class="ds-link" data-action="refresh-records">Refresh records</button></section>`;
     loadRecords();
+  }
+  function summaryPanel(summary) {
+    if(!summary||!summary.checkins||!summary.checkins.total)return '';
+    const counts=summary.checkins, stress=summary.stress||{};
+    const items=part=>((summary[part]||{}).items||[]);
+    const tiers=items('tiers').map(t=>`<li><span class="ds-risk ds-risk-${riskClass(t.category)}">${escape(t.label)}</span><strong>${escape(t.count)}</strong><span>${escape(t.percent)}%</span></li>`).join('');
+    const stressors=items('stressors').map(s=>`<li><span>${escape(s.label)}</span><strong>${escape(s.count)}</strong></li>`).join('')||'<li><span>None named yet</span></li>';
+    const factors=items('factors').map(f=>`<li><span>${escape(f.label)}</span><strong>${escape(f.count)}</strong><span>${escape(f.percent)}%</span></li>`).join('');
+    const average=stress.average_score===null||stress.average_score===undefined?'—':`${escape(stress.average_score)} / 5`;
+    return `<h3>Cohort summary</h3><p class="ds-record-note">For the ${escape(counts.total)} check-ins matching the filters above: ${escape(counts.evaluated)} evaluated, ${escape(counts.pending)} pending. Percentages are of evaluated check-ins.</p>
+      <div class="ds-cohort-grid">
+        <article class="ds-cohort-card"><h4>Tiers</h4><ul>${tiers}</ul></article>
+        <article class="ds-cohort-card"><h4>Average stress score</h4><p class="ds-cohort-big">${average}</p><p>Support priority: ${escape(stress.support_priority||0)} · Safety flag: ${escape(stress.safety_flags||0)}</p></article>
+        <article class="ds-cohort-card"><h4>Top stressors (AI)</h4><ul>${stressors}</ul></article>
+        <article class="ds-cohort-card"><h4>Flagged factors</h4><ul>${factors}</ul></article>
+      </div>`;
   }
   function savedDate(value) {
     if(!value)return '—';
@@ -213,6 +230,7 @@ function home(){main.innerHTML=`<div class="ds-hero"><section><span class="ds-pi
       cohort.innerHTML='<option value="">All cohorts</option>'+data.cohorts.map(year=>`<option value="${escape(year)}">20${escape(year)}</option>`).join('');
       cohort.value=recordFilters.cohort_year;
       status.textContent=`Showing ${data.matching} of ${data.total} check-ins`;
+      main.querySelector('#ds-record-summary').innerHTML=summaryPanel(data.summary);
       const cell=value=>escape(value===null||value===undefined||value===''?'—':value);
       const answerCell=(key,value)=>{
         if(value===null||value===undefined||value==='')return '<td class="ds-num ds-eq">—</td>';
@@ -229,7 +247,7 @@ function home(){main.innerHTML=`<div class="ds-hero"><section><span class="ds-pi
       const answersFor=row=>['pss_1','pss_2','pss_3','pss_4','sleep_hours_avg','sleep_quality','pas_workload','pas_catchup','fin_stress','mspss_friends','mspss_family'].map(key=>answerCell(key,row[key])).join('');
       main.querySelector('#ds-record-rows').innerHTML=data.records.length?data.records.map(row=>`<tr data-risk="${riskClass(row.risk_category)}"><td>${cell(row.student_id)}</td><td class="ds-num ds-eq">${cell(row.stress_score)}</td><td><span class="ds-risk ds-risk-${riskClass(row.risk_category)}">${escape(tierName(row))}</span></td>${answersFor(row)}<td>${cell(row.status)}</td><td class="ds-date">${escape(savedDate(row.saved_at))}</td></tr>`).join(''):'<tr><td colspan="16" class="ds-empty">No records found</td></tr>';
 
-    }catch(error){if(page==='records'&&requestId===recordsRequest){status.textContent='Could not load saved records. Use Refresh records to try again.';main.querySelector('#ds-record-rows').innerHTML='';}}
+    }catch(error){if(page==='records'&&requestId===recordsRequest){status.textContent='Could not load saved records. Use Refresh records to try again.';main.querySelector('#ds-record-rows').innerHTML='';main.querySelector('#ds-record-summary').innerHTML='';}}
   }
   function valid() {
     let message='', focus;

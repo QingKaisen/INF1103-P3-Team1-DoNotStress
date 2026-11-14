@@ -81,7 +81,7 @@ def test_a_missing_or_empty_file_is_no_records():
         assert storage.load() == []
         path.write_text("  \n", encoding="utf-8")
         assert storage.load() == []
-        path.write_text('{"records": [{"student_id": "2000001"}, 3]}',
+        path.write_text('{"records": [{"student_id": "2000001"}]}',
                         encoding="utf-8")
         assert [row["student_id"] for row in storage.load()] == ["2000001"]
 

@@ -10,8 +10,6 @@ are scored as 6 - answer, so a higher scored value always means more
 stress. Never convert legacy /10 or evidence-v2 records onto
 this scale.
 """
-import math
-import re
 
 VERSION = "evidence-v3"
 SCALE_MIN, SCALE_MAX = 1, 5
@@ -76,22 +74,21 @@ SAFETY_PATTERNS = [r"\bsuicid(?:e|al)\b", r"\bself[ -]?harm(?:ing)?\b",
     r"\b(?:want|wish|going|plan|planning) to die\b", r"\b(?:cannot|can't|dont|don't) (?:go on|keep myself safe|want to live)\b",
     r"\bbetter off dead\b", r"\b(?:took|taken|take) an overdose\b"]
 
+# Backwards-compatible module facade. Production uses SurveyDefinition through
+# an injected IOManager, rather than calling these procedural entry points.
+from survey_definition import SurveyDefinition
+
+DEFAULT_SURVEY = SurveyDefinition(version=VERSION, questions=QUESTIONS,
+                                  sections=SECTIONS, safety_patterns=SAFETY_PATTERNS)
+
+
 def safety_check(text):
-    text = str(text or '').lower().replace('’', "'")
-    return any(re.search(pattern, text) for pattern in SAFETY_PATTERNS)
+    return DEFAULT_SURVEY.safety_check(text)
+
 
 def validate_question(raw, q):
-    if raw is None or str(raw).strip() == '':
-        return (True, None) if q.get('optional') else (False, 'Please answer this question.')
-    if isinstance(raw, (bool, list, dict)):
-        return False, 'Choose one of the available answers.'
-    try:
-        value = float(raw)
-    except (ValueError, TypeError, OverflowError):
-        return False, 'Choose a number in the available range.'
-    if not math.isfinite(value) or not q['min'] <= value <= q['max'] or not (value / q['step']).is_integer():
-        return False, f"Choose {q['min']} to {q['max']} in steps of {q['step']}."
-    return True, value if q['step'] == 0.5 else int(value)
+    return DEFAULT_SURVEY.validate_question(raw, q)
+
 
 def public_config():
-    return dict(version=VERSION, questions=QUESTIONS, sections=SECTIONS, safetyPatterns=SAFETY_PATTERNS)
+    return DEFAULT_SURVEY.public_config()

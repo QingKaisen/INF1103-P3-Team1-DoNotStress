@@ -1,0 +1,160 @@
+@startuml
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+left to right direction
+class BaseManager <<abstract>> {
+  -__name: str
+  -__logger: Logger
+  +name
+  +logger
+  +describe(): JSONObject
+  +health(): JSONObject
+}
+class IOManager {
+  -__input
+  -__output
+  +validate_student_form(form_dict)
+  +format_soft_label(soft_label)
+  +format_tips(tips)
+  +format_ai_error(error_code,detail)
+  +display_record(record)
+  +collect_student_record()
+  +describe()
+}
+class AIManager {
+  -__provider: AIProvider
+  -__auditor: ScoreAuditor
+  -__contract: ResponseContract
+  -__classifier: ErrorClassifier
+  -__max_attempts: int
+  +provider
+  +contract
+  +build_prompt(student_dict)
+  +call_api(prompt)
+  +validate_response(payload)
+  +analyse_student(student_dict)
+  +describe()
+}
+class ErrorClassifier {
+  +classify(error): str
+}
+class ResponseContract {
+  -__validators: tuple
+  +validators
+  +schema(): JSONObject
+  +validate(payload)
+}
+class ResponseValidator <<interface>> {
+  +field
+  +validate(value)
+  +schema()
+}
+class LogicManager {
+  -__scorer: Scorer
+  -__rules: list[BusinessRule]
+  -__analyser: TrendAnalyser
+  +apply_logic(record)
+  +score_answers(record)
+  +verify_ai_scores(fields,answers)
+  +scoring_instructions()
+  +describe()
+}
+class DataManager {
+  -__backend: StorageBackend
+  +backend
+  +save_record(record,opt_in)
+  +save_pending_record(record,opt_in)
+  +replace_pending_record(id,record,opt_in)
+  +load_all_records()
+  +filter_records(records,filters)
+  +query(filter_fn)
+  +describe()
+}
+class AIProvider <<interface>> {
+  +name
+  +models
+  +is_ready()
+  +generate(prompt,model,schema)
+  +redact(text)
+}
+class StorageBackend <<interface>> {
+  +location
+  +load()
+  +append(row)
+  +replace(id,row)
+}
+class BusinessRule <<abstract>> {
+  +run(decision)
+}
+class Scorer <<abstract>> {
+  +score(record)
+  +verify(fields,answers)
+}
+class GeminiProvider
+class FunctionProvider
+class JSONStorage
+class StressScorer
+class SafetyOverrideRule
+class SupportPriorityRule
+class ContextFlagRule
+class TipCapRule
+class WebController {
+  -_app: Flask
+  -_service: CheckinService
+  -_pending
+  -_admin_sessions
+  +submit_checkin()
+  +saved_records()
+  +records_summary()
+}
+class CheckinService {
+  -__io
+  -__logic
+  -__data
+  -__reporter
+  +process_checkin(record,ai)
+  +result_view(record,saved)
+  +fingerprint(record)
+  +summarize_records(records)
+}
+class CohortReport {
+  +build(records): JSONObject
+}
+class SurveyDefinition {
+  -__version
+  -__questions
+  -__question_map
+  -__sections
+  -__safety_patterns
+  +public_config()
+  +safety_check(text)
+  +validate_question(raw,question)
+}
+BaseManager <|-- IOManager
+BaseManager <|-- AIManager
+BaseManager <|-- LogicManager
+BaseManager <|-- DataManager
+AIProvider <|-- GeminiProvider
+AIProvider <|-- FunctionProvider
+StorageBackend <|-- JSONStorage
+Scorer <|-- StressScorer
+BusinessRule <|-- SafetyOverrideRule
+BusinessRule <|-- SupportPriorityRule
+BusinessRule <|-- ContextFlagRule
+BusinessRule <|-- TipCapRule
+IOManager "1" o-- "1" SurveyDefinition : questionnaire policy
+WebController "1" --> "1" CheckinService
+WebController "1" ..> "0..*" AIManager : constructs
+CheckinService "1" --> "1" IOManager : association
+CheckinService "1" --> "1" LogicManager : association
+CheckinService "1" --> "1" DataManager : association
+CheckinService "1" *-- "1" CohortReport : composition default
+AIManager "1" o-- "1" AIProvider : injected
+AIManager "1" *-- "1" ResponseContract : composition
+ResponseContract "1" o-- "1..*" ResponseValidator : field checks
+AIManager "1" *-- "1" ErrorClassifier : composition
+LogicManager "1" o-- "1..*" BusinessRule : aggregation
+LogicManager "1" --> "1" Scorer
+DataManager "1" --> "1" StorageBackend
+@enduml

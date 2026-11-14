@@ -35,6 +35,39 @@ Open http://127.0.0.1:5000. If only the Python launcher is available, use `py -m
 .\.venv\Scripts\python.exe -m flask --app main run
 ```
 
+## Phase 2: full object-oriented refactor and new cohort report
+
+**The running application now uses manager objects, not the Phase 1 module-level pipeline.** `main.create_app()` is the composition root and creates `IOManager`, `LogicManager`, `DataManager`, `CheckinService`, and `WebController`. `WebController` receives each request and injects an `AIManager` backed by `GeminiProvider` (or an explicitly configured test `FunctionProvider`). All evaluated records must successfully pass through Gemini and the Logic Manager's cross-check before the Data Manager can save them. Thin original function names are retained only for backwards compatibility with existing tests; the production routes do not call them.
+
+| Object | Responsibility | Location |
+|---|---|---|
+| `IOManager(BaseManager)` | Validates input and formats student-facing output | `io_manager.py` |
+| `AIManager(BaseManager)` | Prompt, structured JSON, Gemini provider, retry/fallback and validation | `ai_manager.py` |
+| `LogicManager(BaseManager)` | Verifies AI-computed score and applies polymorphic business rules | `logic_manager.py` |
+| `DataManager(BaseManager)` | Consent/AI checks, privacy, JSON/database contract, filtering/query | `data_manager.py` |
+| `CheckinService` | Coordinates manager objects and produces allow-listed result | `checkin_service.py` |
+| `SurveyDefinition` | Encapsulates questionnaire, local safety checks and answer validation | `survey_definition.py` |
+| `WebController` | Flask routes, security and admin sessions | `web_controller.py` |
+| `CohortReport` | **New feature:** admin-only aggregate statistics by cohort/tier | `reports/cohort_report.py` |
+
+The new **Cohort overview** appears on the admin Saved Records page and is served by `GET /api/summary`. It returns counts, evaluated/pending split, mean evaluated stress and risk tiers, without listing identifiers or free text. The **GUI** (Flask/HTML/CSS/JS) is the selected advanced feature; instructor confirmation may be required if it was already present in Phase 1.
+
+**Diagrams and submission evidence:** [Engineering notes](docs/PHASE2_ENGINEERING_NOTES.md), [core UML](docs/UML_CORE.puml), [full class/member UML](docs/UML_ALL_CLASSES.puml), [architecture preview](docs/OOP_OVERVIEW.png), [data flow](docs/DATA_FLOW.mmd), [exception-handling matrix](docs/EXCEPTION_MATRIX.md), and the [AI-specific technical details](docs/AI_MANAGER_OOP.md). The six-page final report, genuine Git commit history and exported TeamAId CSV must be finalized by the team before submission.
+
+**Verification:** Syntax checks and 76 selected offline tests passed in the available environment. Full Flask test discovery, a Docker run, GitHub Actions status and a real Gemini call were **not** verified here because required runtime packages/Docker were unavailable. For the complete suite install dependencies, then run:
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+# Docker build and automated tests on a machine with Docker:
+docker build -t donotstress-phase2 .
+docker run --rm -e GEMINI_API_KEY= donotstress-phase2 python -m unittest discover -s tests -v
+# Web UI:
+docker run --rm -p 5000:5000 -e GEMINI_API_KEY= donotstress-phase2
+```
+
+For live AI operation set `GEMINI_API_KEY` securely. Never include a key in source or the submitted ZIP. For public deployment, replace fixed demonstration credentials and add explicit, informed consent for saving real student records.
+
 ## AI configuration
 
 Set `GEMINI_API_KEY` in your local environment or a local `.env` file before starting. A stable `FLASK_SECRET_KEY` is recommended; otherwise each restart generates a fresh key and expires sessions. `PORT` changes the default port. `DONOTSTRESS_DATA_PATH` optionally changes the save-file location.
@@ -86,7 +119,7 @@ Support contacts are always available, including without an AI result, in the pa
 
 ## Flow and storage
 
-`main.py` validates with `io_manager`, runs `ai_manager.analyse_student`, then `logic_manager.apply_logic`. Student-facing results and tips use the I/O formatters. Support contacts come from the existing I/O module. Assessment is AI-assisted wellbeing guidance, not a medical diagnosis.
+`WebController` validates with an injected `IOManager`, invokes `CheckinService.process_checkin` with an `AIManager`, then uses the injected `LogicManager` and `DataManager` to finalize and persist. Student-facing results and tips use the I/O formatting methods. Support contacts come from the IO Manager. Assessment is AI-assisted wellbeing guidance, not a medical diagnosis.
 
 Before submission, the review step says that answers are used to share a few suggestions, while the student ID stays private and anything written in the reflection box is not stored. The server checks reflection text then discards it; only the boolean safety flag remains in a result. Numeric answers are sent for suggestions; the ID and reflection are not. Request bodies must not be logged by a deployment proxy. After a successful check-in the result is shown at `/result`. Session cookies contain only opaque identifiers and a CSRF token, not answers. The in-memory result expires after 30 minutes; the saved file is separate. `/garden` redirects to the home page.
 
@@ -96,8 +129,11 @@ This is a single-process local app. A production deployment needs a shared serve
 
 ## Files
 
-- `main.py`: combined Flask entry point and orchestration.
-- `io_manager.py`, `ai_manager.py`, `logic_manager.py`, `data_manager.py`: existing team layers.
+- `main.py`: small Flask application factory, object composition root and backwards-compatible direct-call adapters.
+- `web_controller.py`: class-based Flask request/authorization adapter.
+- `checkin_service.py`: manager orchestration and result projection.
+- `io_manager.py`, `ai_manager.py`, `logic_manager.py`, `data_manager.py`: four OOP managers.
+- `reports/cohort_report.py`: new private administrative aggregate feature.
 - `templates/base.html`, `templates/checkin.html`: page shell.
 - `static/style.css`, `static/campus.js`: campus UI, sliders, review, and results.
 - Legacy result/error templates remain available; the current interface renders these states in the shared campus UI.
@@ -128,7 +164,7 @@ Use **Admin sign in** (or `/admin/login`) with the fixed coursework account:
 - Username: `admin`
 - Password: `DoNotStress2026!`
 
-The credential check runs on the server; `main.py` contains a password hash. Credentials are not embedded in the login page, JavaScript or browser configuration. This shared, documented demo account is for the local prototype, not public deployment with real student records.
+The credential check runs on the server; `web_controller.py` contains a password hash. Credentials are not embedded in the login page, JavaScript or browser configuration. This shared, documented demo account is for the local prototype, not public deployment with real student records.
 
 Successful sign-in opens **Saved records** at `/records`. The header is rendered from the server session on every page. While that session is valid, Home and Check-in still show **Admin view** and **Log out**. `/records` is admin-only and redirects unauthenticated users to sign-in, and `/api/records` returns 401 before loading any records. Admin access expires after 30 minutes. **Log out** revokes the server-side admin token, clears the current browser session, and returns to Student view. Restarting the app revokes admin sessions. Five failed sign-in attempts within five minutes temporarily block further attempts from that address.
 

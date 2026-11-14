@@ -9,8 +9,8 @@ the AI manager owns that.
 The formula lives only in a Scorer. StressScorer is the implementation
 used by default. The outcome is
 built by running BusinessRule objects in order, so a new rule is a new
-subclass rather than a change to LogicManager.evaluate(). main.py still
-calls the module-level names below; they are the default manager's methods.
+subclass rather than a change to LogicManager.evaluate(). The web app
+uses an injected LogicManager; legacy module functions remain as adapters.
 
 Refinement
 ----------
@@ -25,9 +25,8 @@ same. The structure is what changed:
 - The scorer field is a Scorer, not a hard-wired StressScorer. The
   default is still a StressScorer. A caller can pass another Scorer
   (dependency inversion).
-- main.py did not change. apply_logic, verify_ai_scores,
-  scoring_instructions, evaluate, score and route are methods of one
-  default LogicManager.
+- The Flask application injects a LogicManager instance into CheckinService.
+  The functional names are kept as compatibility adapters for older tests.
 
 Relationships
 -------------

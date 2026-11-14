@@ -1,0 +1,686 @@
+@startuml
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+hide empty members
+left to right direction
+scale 0.7
+class "AIFailure\nai/ai_failure.py" as AIFailure {
+  - __code: str
+  - __detail: str
+  + MISSING_API_KEY: str
+  + TIMEOUT: str
+  + INVALID_RESPONSE: str
+  + RETRIES_EXHAUSTED: str
+  + RATE_LIMITED: str
+  + UNAVAILABLE: str
+  + CODES: tuple[str, ...]
+  + SOURCE: str
+  + __init__(code: str, detail: str): None
+  + code(): str
+  + detail(): str
+  + source(): str
+  + as_dict(): dict[str, str]
+}
+class "AIProvider\nai/ai_provider.py" as AIProvider <<abstract>> {
+  + name(): str
+  + models(): tuple[str, ...]
+  + is_ready(): bool
+  + generate(prompt: str, model_name: str, schema: JSONObject | None): str
+  + redact(text: str): str
+}
+class "AIResult\nai/ai_result.py" as AIResult {
+  - __fields: JSONObject | None
+  - __failure: AIFailure | None
+  + __init__(fields: JSONObject | None, failure: AIFailure | None): None
+  + fields(): JSONObject | None
+  + failure(): AIFailure | None
+  + ok(): bool
+}
+class "ErrorClassifier\nai/error_classifier.py" as ErrorClassifier {
+  + MISSING_KEY_MARKERS: tuple[str, ...]
+  + RATE_LIMIT_MARKERS: tuple[str, ...]
+  + TIMEOUT_MARKERS: tuple[str, ...]
+  + SCHEMA_MARKERS: tuple[str, ...]
+  + classify(error: Exception | str | None): str
+  - __mentions(text: str, markers: tuple[str, ...]): bool
+}
+class "FunctionProvider\nai/function_provider.py" as FunctionProvider {
+  - __generate_fn
+  - __api_key
+  - __models
+  + __init__(generate_fn: Callable[[str, str, str], str], api_key: str, models: tuple[str, ...]): None
+  + name(): str
+  + models(): tuple[str, ...]
+  + is_ready(): bool
+  + generate(prompt: str, model_name: str, schema: JSONObject | None): str
+  + redact(text: str): str
+}
+class "GeminiProvider\nai/gemini_provider.py" as GeminiProvider {
+  - __api_key: str
+  - __models: tuple[str, ...]
+  + MODEL_CHAIN: tuple[str, ...]
+  + TEMPERATURE: float
+  + TIMEOUT_SEC: float
+  + __init__(api_key: str | None, preferred_model: str | None): None
+  + name(): str
+  + models(): tuple[str, ...]
+  + is_ready(): bool
+  + generate(prompt: str, model_name: str, schema: JSONObject | None): str
+  + redact(text: str): str
+  - __model_order(preferred: str | None): tuple[str, ...]
+}
+class "ScoreAuditor\nai/score_auditor.py" as ScoreAuditor <<abstract>> {
+  + instructions(): str
+  + verify(ai_fields: JSONObject, answers: JSONObject): str | None
+}
+class "ChoiceValidator\nai/validators/choice_validator.py" as ChoiceValidator {
+  - __choices: tuple[str, ...]
+  - __description: str
+  + __init__(field: str, choices: tuple[str, ...], description: str): None
+  + validate(value: object): tuple[bool, JSONValue]
+  + schema(): JSONObject
+  # _normalise(text: str): str | None
+  - __quoted_choices(): str
+}
+class "ConfidenceValidator\nai/validators/confidence_validator.py" as ConfidenceValidator {
+  + __init__(): None
+}
+class "IdListValidator\nai/validators/id_list_validator.py" as IdListValidator {
+  - __allowed: frozenset[str]
+  - __min_items: int
+  - __max_items: int | None
+  + __init__(field: str, allowed: frozenset[str], min_items: int, max_items: int | None): None
+  + validate(value: object): tuple[bool, JSONValue]
+  + schema(): JSONObject
+  - __size_ok(count: int): bool
+  - __size_problem(): str
+}
+class "RangeValidator\nai/validators/range_validator.py" as RangeValidator {
+  - __minimum: float
+  - __maximum: float
+  - __description: str
+  + __init__(field: str, minimum: float, maximum: float, description: str): None
+  + validate(value: object): tuple[bool, JSONValue]
+  + schema(): JSONObject
+}
+class "ReasoningValidator\nai/validators/reasoning_validator.py" as ReasoningValidator {
+  + __init__(): None
+  + validate(value: object): tuple[bool, JSONValue]
+  + schema(): JSONObject
+}
+class "ResponseValidator\nai/validators/response_validator.py" as ResponseValidator <<abstract>> {
+  - __field: str
+  + __init__(field: str): None
+  + field(): str
+  + validate(value: object): tuple[bool, JSONValue]
+  + schema(): JSONObject
+}
+class "ScoreValidator\nai/validators/score_validator.py" as ScoreValidator {
+  + MINIMUM: float
+  + MAXIMUM: float
+  + __init__(): None
+}
+class "ScoredItemsValidator\nai/validators/scored_items_validator.py" as ScoredItemsValidator {
+  - __keys: tuple[str, ...]
+  + __init__(keys: tuple[str, ...]): None
+  + validate(value: object): tuple[bool, JSONValue]
+  + schema(): JSONObject
+}
+class "SoftLabelValidator\nai/validators/soft_label_validator.py" as SoftLabelValidator {
+  + LABELS: tuple[str, ...]
+  + ALIASES: dict[str, str]
+  + __init__(): None
+  # _normalise(text: str): str | None
+}
+class "StressorsValidator\nai/validators/stressors_validator.py" as StressorsValidator {
+  + ALLOWED: frozenset[str]
+  + __init__(): None
+}
+class "TipsValidator\nai/validators/tips_validator.py" as TipsValidator {
+  + ALLOWED: frozenset[str]
+  + MIN_TIPS: int
+  + MAX_TIPS: int
+  + __init__(): None
+}
+class "ResponseContract\nai/response_contract.py" as ResponseContract {
+  - __validators: tuple
+  - __schema: JSONObject
+  + __init__(validators): None
+  + validators(): tuple
+  + schema(): JSONObject
+  + validate(payload: dict): tuple
+}
+class "AIManager\nai_manager.py" as AIManager {
+  - __provider
+  - __auditor
+  - __max_attempts
+  - __retry_delay_sec
+  - __questions
+  - __sleep
+  - __contract: ResponseContract
+  - __classifier: ErrorClassifier
+  + __init__(provider: AIProvider, auditor: ScoreAuditor | None, max_attempts: int, retry_delay_s...): None
+  + describe(): JSONObject
+  + provider(): AIProvider
+  + contract(): ResponseContract
+  + build_prompt(student_dict: dict[str, Any], questions: Sequence[Mapping[str, Any]] | None, instruc...): str
+  + validate_response(payload: Any): tuple[bool, Any]
+  + call_api(prompt: str, answers: Mapping[str, Any] | None, verify_fn: Callable[[dict[str, Any],...): tuple[bool, dict[str, Any] | None, dict[str, str] | None]
+  + analyse_student(student_dict: dict[str, Any], questions: Sequence[Mapping[str, Any]] | None, instruc...): tuple[bool, dict[str, Any] | None, dict[str, str] | None]
+}
+class "BaseManager\nbase_manager.py" as BaseManager <<abstract>> {
+  - __name: str
+  - __logger: logging.Logger
+  + __init__(name: str): None
+  + name(): str
+  + logger(): logging.Logger
+  + describe(): JSONObject
+  + health(): JSONObject
+}
+class "CheckinService\ncheckin_service.py" as CheckinService {
+  - __reporter
+  - __io
+  - __logic
+  - __data
+  + __init__(io: IOManager, logic: LogicManager, data: DataManager, reporter: CohortReport | None): None
+  + io(): IOManager
+  + logic(): LogicManager
+  + data(): DataManager
+  + summarize_records(records: list[dict]): dict
+  + fingerprint(record: dict): str
+  + process_checkin(record: dict, ai: AIManager): tuple[bool, dict | str]
+  + result_view(record: dict, saved: bool): dict
+}
+class "DataManager\ndata_manager.py" as DataManager {
+  - __backend: StorageBackend
+  + __init__(data_path: str | Path | None, backend: StorageBackend | None): None
+  + backend(): StorageBackend
+  + describe(): JSONObject
+  + get_default_data_path(): str
+  # _resolve_path(path: str | Path | None): Path
+  # _is_opted_in(opt_in: Any): bool
+  # _is_valid_probability(value: Any): bool
+  # _validate_ai_fields(record: dict[str, Any]): str | None
+  # _ai_success_error(record: dict[str, Any]): str | None
+  # _stored_copy(record: dict[str, Any], pending: bool, record_id: str | None): dict[str, Any]
+  # _response(record: dict[str, Any] | None, error: str | None): dict[str, Any]
+  # _write(stored: dict[str, Any], replace_id: str | None): dict[str, Any]
+  + load_all_records(): dict[str, Any]
+  + save_record(record: dict[str, Any], opt_in: Any): dict[str, Any]
+  + save_pending_record(record: dict[str, Any], opt_in: Any): dict[str, Any]
+  + replace_pending_record(record_id: str, new_record: dict[str, Any], opt_in: Any): dict[str, Any]
+  + save(record: dict[str, Any], opt_in: Any): dict[str, Any]
+  + load(): list[dict[str, Any]]
+  + query(filter_fn: Callable[[dict[str, Any]], Any]): list[dict[str, Any]]
+  + filter_records(records: list[dict[str, Any]]): list[dict[str, Any]]
+}
+class "IOManager\nio_manager.py" as IOManager {
+  - __input
+  - __output
+  - __survey: SurveyDefinition
+  + __init__(input_fn, output_fn, definition: SurveyDefinition | None): None
+  + survey(): SurveyDefinition
+  + describe(): JSONObject
+  # _read(prompt: str): str
+  # _emit(): None
+  # _as_text(raw): str
+  # _looks_like_int(text: str): bool
+  # _form_get(form_dict, key: str)
+  # _looks_like_secret(text: str): bool
+  # _sanitize_operator_detail(raw): str | None
+  + normalize_form_value(raw): str
+  + validate_student_id(raw): tuple[bool, str]
+  + validate_feelings_text(raw)
+  + validate_student_form(form_dict)
+  + format_soft_label(soft_label): dict
+  + format_tips(tips): dict
+  + format_speak_to_advisor_panel(speak_prominence): dict
+  # _ai_failure_copy(error_code, detail): dict
+  + format_ai_error(error_code, detail): dict
+  + format_student_record(record: dict): dict
+  + print_message(message: str): None
+  + print_error(message: str): None
+  + display_record(record: dict[str, Any]): None
+  + display_list(records: list[dict[str, Any]]): None
+  + display_result(result: dict[str, Any]): None
+  # _prompt_until_valid(prompt: str, validator)
+  + get_student_id(): str
+  + collect_student_record()
+}
+class "BusinessRule\nlogic/business_rule.py" as BusinessRule <<abstract>> {
+  + name(): str
+  + applies(decision: Decision): bool
+  + apply(decision: Decision): None
+  + run(decision: Decision): bool
+}
+class "ContextFlagRule\nlogic/context_flag_rule.py" as ContextFlagRule {
+  + FLAG_TIPS: tuple[tuple[str, str], ...]
+  + name(): str
+  + applies(decision: Decision): bool
+  + apply(decision: Decision): None
+}
+class "Decision\nlogic/decision.py" as Decision {
+  - __record: JSONObject
+  - __context_flags: dict[str, bool]
+  - __risk_category: str
+  - __soft_label: str
+  - __speak_prominence: str
+  - __gemini_tips: list[str]
+  - __lead_tips: list[str]
+  - __extra_tips: list[str]
+  - __tips: list[str]
+  - __notes: list[str]
+  - __support_priority: bool
+  + __init__(record: JSONObject, context_flags: dict[str, bool]): None
+  + field(name: str): JSONValue
+  + context_flags(): dict[str, bool]
+  + risk_category(): str
+  + risk_category(value: str): None
+  + soft_label(): str
+  + soft_label(value: str): None
+  + speak_prominence(): str
+  + speak_prominence(value: str): None
+  + support_priority(): bool
+  + support_priority(value: bool): None
+  + gemini_tips(): list[str]
+  + lead_tips(): list[str]
+  + extra_tips(): list[str]
+  + tips(): list[str]
+  + tips(value: list[str]): None
+  + notes(): list[str]
+  + lead_with(tip_id: str): None
+  + suggest(tip_id: str): None
+  + note(text: str): None
+  - __strings(value: JSONValue): list[str]
+}
+class "SafetyOverrideRule\nlogic/safety_override_rule.py" as SafetyOverrideRule {
+  + TALK_TO_SOMEONE: str
+  + name(): str
+  + applies(decision: Decision): bool
+  + apply(decision: Decision): None
+}
+class "ScoreCard\nlogic/score_card.py" as ScoreCard {
+  - __stress_score: float
+  - __scored_items: dict[str, int]
+  - __support_mean: float
+  - __risk_category: str
+  - __context_flags: dict[str, bool]
+  + __init__(stress_score: float, scored_items: dict[str, int], support_mean: float, risk_categor...): None
+  + stress_score(): float
+  + scored_items(): dict[str, int]
+  + item_count(): int
+  + support_mean(): float
+  + risk_category(): str
+  + context_flags(): dict[str, bool]
+}
+class "Scorer\nlogic/scorer.py" as Scorer <<abstract>> {
+  + score(answers: JSONObject): ScoreCard
+  + scored_items(answers: JSONObject): dict[str, int]
+  + scored_value(key: str, answer: float): float
+  + sleep_hours_stress(hours: float): int
+  + category_for(stress_score: float): str
+  + label_for(category: str): str
+  + prominence_for(category: str): str
+  + risk_score_for(stress_score: float): float
+  + within_tolerance(gemini_score: float, logic_score: float): bool
+  + context_flags(answers: JSONObject, support_mean: float): dict[str, bool]
+  + answer_in_range(key: str, value: JSONValue): bool
+  + number(value: JSONValue): float | None
+}
+class "StressScorer\nlogic/stress_scorer.py" as StressScorer {
+  + SCALE_MIN: int
+  + SCALE_MAX: int
+  + ANSWER_KEYS: tuple[str, ...]
+  + REVERSED_KEYS: tuple[str, ...]
+  + SUPPORT_KEYS: tuple[str, ...]
+  + SLEEP_KEY: str
+  + SLEEP_HOURS_MIN: int
+  + SLEEP_HOURS_MAX: int
+  + SLEEP_HOUR_BANDS: tuple[tuple[int, int], ...]
+  + SLEEP_HOURS_BELOW_ALL: int
+  + CHECK_IN_FROM: float
+  + REACH_OUT_ABOVE: float
+  + TOLERANCE: float
+  + CATEGORY_LABELS: dict[str, str]
+  + CATEGORY_PROMINENCE: dict[str, str]
+  + FLAG_SLEEP: str
+  + FLAG_WORKLOAD: str
+  + FLAG_FINANCES: str
+  + FLAG_SUPPORT: str
+  + SLEEP_FLAG_BELOW_HOURS: float
+  + SLEEP_QUALITY_FLAG_MIN: float
+  + WORKLOAD_FLAG_MIN: float
+  + FINANCE_FLAG_MIN: float
+  + SUPPORT_FLAG_BELOW: float
+  + score(answers: JSONObject): ScoreCard
+  + scored_items(answers: JSONObject): dict[str, int]
+  + scored_value(key: str, answer: float): float
+  + sleep_hours_stress(hours: float): int
+  + category_for(stress_score: float): str
+  + label_for(category: str): str
+  + prominence_for(category: str): str
+  + risk_score_for(stress_score: float): float
+  + within_tolerance(gemini_score: float, logic_score: float): bool
+  + context_flags(answers: JSONObject, support_mean: float): dict[str, bool]
+  + answer_in_range(key: str, value: JSONValue): bool
+  + number(value: JSONValue): float | None
+  + instructions(): str
+  + verify(ai_fields: JSONObject, answers: JSONObject): str | None
+  - __scorable(key: str, value: JSONValue): bool
+  - __answer(answers: JSONObject, key: str): float
+}
+class "SupportPriorityRule\nlogic/support_priority_rule.py" as SupportPriorityRule {
+  + CATEGORY: str
+  + STRESSOR: str
+  + TALK_TO_SOMEONE: str
+  + KEEP_SOCIAL_CONTACT: str
+  + name(): str
+  + applies(decision: Decision): bool
+  + apply(decision: Decision): None
+}
+class "TipCapRule\nlogic/tip_cap_rule.py" as TipCapRule {
+  + MAX_TIPS: int
+  + name(): str
+  + applies(decision: Decision): bool
+  + apply(decision: Decision): None
+}
+class "Trend\nlogic/trend.py" as Trend {
+  - __comparison: str
+  - __direction: str
+  - __latest: float | None
+  - __previous: float | None
+  - __average: float | None
+  + NONE: str
+  + FIRST: str
+  + LOWER: str
+  + SIMILAR: str
+  + HIGHER: str
+  + NOT_ENOUGH: str
+  + EASING: str
+  + STEADY: str
+  + BUILDING: str
+  + __init__(comparison: str, direction: str, latest: float | None, previous: float | None, avera...): None
+  + comparison(): str
+  + direction(): str
+  + latest(): float | None
+  + previous(): float | None
+  + average(): float | None
+  + change(): float | None
+}
+class "TrendAnalyser\nlogic/trend_analyser.py" as TrendAnalyser {
+  + SIMILAR_WITHIN: float
+  + WINDOW: int
+  + SLOPE_THRESHOLD: float
+  + MIN_FOR_DIRECTION: int
+  + analyse(history: StressHistory): Trend
+  - __compare(latest: float, previous: float): str
+  - __direction(scores: list[float]): str
+  - __slope(values: list[float]): float
+}
+class "LogicManager\nlogic_manager.py" as LogicManager {
+  - __scorer: Scorer
+  - __rules: list[BusinessRule]
+  - __analyser: TrendAnalyser
+  + __init__(scorer: Scorer | None, rules: list[BusinessRule] | None, analyser: TrendAnalyser | None): None
+  + rules(): list[BusinessRule]
+  + describe(): JSONObject
+  + apply_logic(record: dict): dict
+  + evaluate(record: dict): dict
+  + score(record: dict): float | None
+  + route(record: dict): str
+  + score_answers(record: dict): dict
+  + scored_value(key: str, answer: float): float
+  + sleep_hours_stress(hours: float): int
+  + category_for_score(stress_score: float): str
+  + needs_support_priority(record: dict): bool
+  + risk_score_for(stress_score: float): float
+  + scored_items(answers: dict): dict[str, int]
+  + verify_ai_scores(ai_fields: dict, answers: dict): str | None
+  + scoring_instructions(): str
+  + context_flags(record: dict, support_mean: float): dict[str, bool]
+  + factor_insights(record: dict, scores: dict): list[dict]
+  + analyse_trend(history: StressHistory): Trend
+  + within_tolerance(gemini_score: float, logic_score: float): bool
+  - __error_result(record: dict, missing: list[str], invalid: list[str]): dict
+  - __score_mismatch_result(record: dict, gemini_score: float, logic_score: float): dict
+  - __field_problems(record: dict): tuple[list[str], list[str]]
+}
+class "Question\nquestions/question.py" as Question {
+  - __key: str
+  - __label: str
+  - __prompt: str
+  - __minimum: int
+  - __maximum: int
+  - __options: tuple[str, ...]
+  - __step: float
+  - __reverse: bool
+  - __kind: str
+  - __default: float | None
+  - __low: str
+  - __high: str
+  - __unit: str
+  + __init__(key: str, label: str, prompt: str, minimum: int, maximum: int, options: tuple[str, ....): None
+  + key(): str
+  + label(): str
+  + prompt(): str
+  + minimum(): int
+  + maximum(): int
+  + options(): tuple[str, ...]
+  + step(): float
+  + reverse(): bool
+  + kind(): str
+  + low(): str
+  + high(): str
+  + validate(raw: object): tuple[bool, int | float | str]
+  + option_label(value: int): str
+  + as_dict(): JSONObject
+}
+class "Questionnaire\nquestions/questionnaire.py" as Questionnaire {
+  - __version: str
+  - __questions: list[Question]
+  - __sections: list[Section]
+  - __safety: SafetyCheck
+  - __by_key: dict[str, Question]
+  + __init__(version: str, questions: list[Question], sections: list[Section], safety_patterns: t...): None
+  + version(): str
+  + questions(): list[Question]
+  + sections(): list[Section]
+  + safety(): SafetyCheck
+  + keys(): tuple[str, ...]
+  + reversed_keys(): tuple[str, ...]
+  + question(key: str): Question
+  + public_config(): JSONObject
+}
+class "SafetyCheck\nquestions/safety_check.py" as SafetyCheck {
+  - __patterns: tuple[str, ...]
+  - __compiled: tuple[re.Pattern[str], ...]
+  + __init__(patterns: tuple[str, ...]): None
+  + patterns(): tuple[str, ...]
+  + fired(text: object): bool
+}
+class "Section\nquestions/section.py" as Section {
+  - __title: str
+  - __heading: str
+  - __period: str
+  - __intro: str
+  - __why: str
+  - __keys: tuple[str, ...]
+  + __init__(title: str, heading: str, period: str, intro: str, why: str, keys: tuple[str, ...]): None
+  + title(): str
+  + heading(): str
+  + keys(): tuple[str, ...]
+  + as_dict(): JSONObject
+}
+class "CheckInRecord\nrecords/check_in_record.py" as CheckInRecord {
+  + AI_SUCCESS_SOURCES: frozenset[str]
+  + BLOCKED_SOURCES: frozenset[str]
+  + REQUIRED_AI_FIELDS: tuple[str, ...]
+  + CATEGORIES: tuple[str, ...]
+  + status(): str
+  + score(): float | None
+  + risk_category(): str
+  + soft_label(): str
+  + problem(): str | None
+  # _mark(row: JSONObject): None
+  - __field_problem(): str | None
+  - __is_probability(value: JSONValue): bool
+}
+class "PendingRecord\nrecords/pending_record.py" as PendingRecord {
+  + status(): str
+  + score(): float | None
+  + problem(): str | None
+  # _mark(row: JSONObject): None
+}
+class "Record\nrecords/record.py" as Record <<abstract>> {
+  - __data: JSONObject
+  + PRIVATE_FIELDS: tuple[str, ...]
+  + __init__(data: JSONObject): None
+  + record_id(): str
+  + student_id(): str
+  + saved_at(): str
+  + survey_version(): str
+  + status(): str
+  + score(): float | None
+  + problem(): str | None
+  + get(key: str): JSONValue
+  + belongs_to(student_id: str): bool
+  + to_row(): JSONObject
+  # _mark(row: JSONObject): None
+}
+class "StressHistory\nrecords/stress_history.py" as StressHistory {
+  - __student_id: str
+  - __records: list[CheckInRecord]
+  - __pending_count: int
+  + __init__(student_id: str, records: list[CheckInRecord], pending_count: int): None
+  + student_id(): str
+  + records(): list[CheckInRecord]
+  + count(): int
+  + pending_count(): int
+  + scores(): list[float]
+  + latest(): CheckInRecord | None
+  + previous(): CheckInRecord | None
+}
+class "CohortReport\nreports/cohort_report.py" as CohortReport {
+  + build(records: list[dict[str, Any]]): JSONObject
+}
+class "JSONStorage\nstorage/json_storage.py" as JSONStorage {
+  - __path: Path
+  - __lock: threading.RLock
+  - __logger: logging.Logger
+  - _backup_n
+  + __init__(path: Path): None
+  + location(): str
+  + load(): list[JSONObject]
+  + append(row: JSONObject): None
+  + replace(record_id: str, row: JSONObject): None
+  - __read(): tuple[list[JSONObject], str | None]
+  - __back_up(problem: str): str
+  - __write(rows: list[JSONObject]): None
+}
+class "SaveResult\nstorage/save_result.py" as SaveResult {
+  - __row: JSONObject | None
+  - __error: str | None
+  + __init__(row: JSONObject | None, error: str | None): None
+  + ok(): bool
+  + row(): JSONObject | None
+  + error(): str | None
+  + record_id(): str
+}
+class "StorageBackend\nstorage/storage_backend.py" as StorageBackend <<abstract>> {
+  + location(): str
+  + load(): list[JSONObject]
+  + append(row: JSONObject): None
+  + replace(record_id: str, row: JSONObject): None
+}
+class "StorageError\nstorage/storage_error.py" as StorageError {
+}
+class "SurveyDefinition\nsurvey_definition.py" as SurveyDefinition {
+  - __version
+  - __questions
+  - __question_map
+  - __sections
+  - __safety_patterns
+  + __init__(version: str, questions: list[dict[str, Any]], sections: list[dict[str, Any]], safet...): None
+  + version(): str
+  + questions(): tuple[dict[str, Any], ...]
+  + question_map(): dict[str, dict[str, Any]]
+  + safety_check(text: object): bool
+  + validate_question(raw: object, question: dict[str, Any]): tuple[bool, Any]
+  + public_config(): dict[str, Any]
+}
+class "WebController\nweb_controller.py" as WebController {
+  - _app
+  - _service
+  - _io: IOManager
+  - _data: DataManager
+  - _logic: LogicManager
+  - _pending: dict
+  - _submissions: dict
+  - _lock
+  - _admin_sessions: dict
+  - _login_attempts: dict
+  + __init__(app: Flask, service: CheckinService)
+  # _ai_for_request(): AIManager
+  # _register_routes(): None
+  + is_admin()
+  + revoke_admin()
+  + clear_pending()
+  + matched_pending_id(fingerprint)
+  + remember_submission(fingerprint, record_id, pending_save)
+  + current_entry()
+  + expire_records_and_check_csrf()
+  + render_campus(page)
+  + checkin()
+  + retired_page()
+  + admin_login()
+  + admin_logout()
+  + submit_checkin()
+  + records_page()
+  + saved_records()
+  + records_summary()
+  + result()
+  + save_checkin()
+  + new_checkin()
+  + oversized_request(error)
+  + prevent_answer_caching(response)
+}
+AIProvider <|-- FunctionProvider
+AIProvider <|-- GeminiProvider
+ResponseValidator <|-- ChoiceValidator
+RangeValidator <|-- ConfidenceValidator
+ResponseValidator <|-- IdListValidator
+ResponseValidator <|-- RangeValidator
+ResponseValidator <|-- ReasoningValidator
+RangeValidator <|-- ScoreValidator
+ResponseValidator <|-- ScoredItemsValidator
+ChoiceValidator <|-- SoftLabelValidator
+IdListValidator <|-- StressorsValidator
+IdListValidator <|-- TipsValidator
+BaseManager <|-- AIManager
+BaseManager <|-- DataManager
+BaseManager <|-- IOManager
+BusinessRule <|-- ContextFlagRule
+BusinessRule <|-- SafetyOverrideRule
+ScoreAuditor <|-- Scorer
+Scorer <|-- StressScorer
+BusinessRule <|-- SupportPriorityRule
+BusinessRule <|-- TipCapRule
+BaseManager <|-- LogicManager
+Record <|-- CheckInRecord
+Record <|-- PendingRecord
+StorageBackend <|-- JSONStorage
+
+WebController "1" --> "1" CheckinService : delegates to
+WebController "1" ..> "0..*" AIManager : constructs per request
+CheckinService "1" --> "1" IOManager : validation + presentation
+CheckinService "1" --> "1" LogicManager : scores + rules
+CheckinService "1" --> "1" DataManager : persistence
+CheckinService "1" *-- "1" CohortReport : report feature
+AIManager "1" o-- "1" AIProvider : injected
+AIManager "1" *-- "1" ResponseContract : reply contract
+ResponseContract "1" o-- "1..*" ResponseValidator : polymorphic checks
+AIManager "1" --> "0..1" ScoreAuditor : optional
+LogicManager "1" --> "1" Scorer : scoring contract
+LogicManager "1" o-- "1..*" BusinessRule : ordered rules
+DataManager "1" --> "1" StorageBackend : storage contract
+@enduml

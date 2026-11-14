@@ -1,28 +1,25 @@
-﻿name: Tests
+name: Phase 2 checks
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the code
+      - name: Check out code
         uses: actions/checkout@v4
-
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run the tests
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install pinned requirements
+        run: python -m pip install -r requirements.txt
+      - name: Verify Python syntax
+        run: python -m compileall -q .
+      - name: Run offline test suite (no Gemini API connection)
         env:
-          GEMINI_API_KEY: ""
+          GEMINI_API_KEY: ''
         run: python -m unittest discover -s tests -v

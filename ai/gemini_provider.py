@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 
-from google import genai
-
 from ai.ai_provider import AIProvider
 from json_types import JSONObject
 
@@ -46,8 +44,11 @@ class GeminiProvider(AIProvider):
 
     def generate(self, prompt: str, model_name: str,
                  schema: JSONObject | None = None) -> str:
-        # The SDK's own HTTP retries are off: AIManager's call cap is the
-        # only retry policy, so a 429 never turns into a retry storm.
+        # Import only when making a live request: offline tests and fake
+        # providers do not require the Google SDK to be installed.
+        from google import genai
+
+        # Disable SDK retries; AIManager owns the per-record call cap.
         client = genai.Client(
             api_key=self.__api_key,
             http_options={
@@ -64,9 +65,18 @@ class GeminiProvider(AIProvider):
             config["response_schema"] = schema
         response = client.models.generate_content(
             model=model_name, contents=prompt, config=config)
-        if not response.text:
-            raise RuntimeError("Gemini returned no text payload.")
-        return response.text
+        text = getattr(response, "text", None)
+        # Some SDK replies expose text only on their first candidate.
+        if text is None:
+            try:
+                text = response.candidates[0].content.parts[0].text
+            except (AttributeError, IndexError, TypeError) as exc:
+                raise RuntimeError("Gemini returned no text payload.") from exc
+        if text == "":
+            # Treat an empty Gemini reply as invalid JSON, not a network
+            # error, matching the original call_gemini retry behaviour.
+            raise RuntimeError("Gemini returned no text payload (empty AI response).")
+        return text
 
     def redact(self, text: str) -> str:
         if self.__api_key:

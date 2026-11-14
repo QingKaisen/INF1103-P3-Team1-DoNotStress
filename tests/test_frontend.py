@@ -132,7 +132,7 @@ def test_invalid_fields_prevent_ai_call():
         for field, value in [('student_id','1200000'), ('sleep_hours_avg','6.75'),
                              ('pss_1','6'), ('pas_workload','0'),
                              ('fin_stress','yes'), ('mspss_friends','1.5')]:
-            with case(field=field), patch('main.ai_manager.analyse_student') as ai:
+            with case(field=field), patch('ai_manager.AIManager.analyse_student') as ai:
                 response = post_checkin(ctx, {**ctx.values, field:value})
                 assert response.status_code == 400
                 assert field in response.json['errors']
@@ -147,7 +147,7 @@ def test_optional_text():
 def test_missing_key_returns_error_and_no_logic_fallback():
     with campus_app() as ctx:
         ctx.app.config['AI_GENERATE_FN'] = None
-        with patch.dict(os.environ, {'GEMINI_API_KEY':''}), patch('main.logic_manager.apply_logic') as logic:
+        with patch.dict(os.environ, {'GEMINI_API_KEY':''}), patch('logic_manager.LogicManager.apply_logic') as logic:
             response = post_checkin(ctx)
         assert response.status_code == 503
         assert response.json['error_code'] == 'missing_api_key'
@@ -259,7 +259,7 @@ def test_new_and_expired_result():
 
 def test_save_failure_is_retryable():
     with campus_app() as ctx:
-        with patch('main.data_manager.save_record', return_value={'ok':False}):
+        with patch.object(ctx.app.extensions['data_manager'], 'save_record', return_value={'ok':False}):
             assert post_checkin(ctx).status_code == 500
         assert not ctx.path.exists()
         assert post_checkin(ctx).status_code == 200

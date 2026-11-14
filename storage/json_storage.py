@@ -40,19 +40,28 @@ class JSONStorage(StorageBackend):
     def load(self) -> list[JSONObject]:
         with self.__lock:
             rows, problem = self.__read()
-        if problem:
+        # A list that mixes objects and other values is still readable: the
+        # objects are returned and the file is backed up. Writes stay blocked.
+        # Broken JSON and unknown schemas are not readable.
+        if problem and not problem.startswith("Invalid record entries"):
             raise StorageError(problem)
         return rows
 
     def append(self, row: JSONObject) -> None:
         with self.__lock:
-            rows, _ = self.__read()
+            rows, problem = self.__read()
+            if problem and (problem.startswith("Unsupported data file schema") or
+                            problem.startswith("Invalid record entries")):
+                raise StorageError(problem)
             rows.append(row)
             self.__write(rows)
 
     def replace(self, record_id: str, row: JSONObject) -> None:
         with self.__lock:
-            rows, _ = self.__read()
+            rows, problem = self.__read()
+            if problem and (problem.startswith("Unsupported data file schema") or
+                            problem.startswith("Invalid record entries")):
+                raise StorageError(problem)
             for index, existing in enumerate(rows):
                 if str(existing.get("record_id") or "").strip() == record_id:
                     rows[index] = row
@@ -80,13 +89,23 @@ class JSONStorage(StorageBackend):
         except json.JSONDecodeError as error:
             return [], self.__back_up(f"Corrupted JSON in data file: {error}")
         if isinstance(payload, dict):
-            payload = payload.get("records")
+            # A dictionary without the documented records list is not an
+            # empty database. Preserve its exact bytes and refuse destructive
+            # writes rather than silently overwriting valid but unknown JSON.
+            if "records" not in payload or not isinstance(payload["records"], list):
+                return [], self.__back_up(
+                    "Unsupported data file schema: expected a 'records' list.")
+            payload = payload["records"]
         if payload is None:
-            return [], None
+            return [], self.__back_up(
+                "Corrupted data file: expected a list of records.")
         if not isinstance(payload, list):
             return [], self.__back_up(
                 "Corrupted data file: expected a list of records.")
-        return [row for row in payload if isinstance(row, dict)], None
+        if any(not isinstance(row, dict) for row in payload):
+            return [row for row in payload if isinstance(row, dict)], self.__back_up(
+                "Invalid record entries: all records must be JSON objects.")
+        return payload, None
 
     def __back_up(self, problem: str) -> str:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
