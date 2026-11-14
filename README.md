@@ -1,4 +1,8 @@
-# INF1103-P3-Team1-DoNotStress
+# INF1103-P3-Team1-DoNotStress-Proposal to update Team Project'S Logic Manager Layer to ethancheang/refactor/fake-provider-to-tests
+# Tests 47:Commit bbdf6bf pushed by ethancheang Nov 13, 23:51 
+# Ethan sent our team his commit plan (commit_plan.md) on 13 November 2026. Zhung Yi and I are tasked with reviewing his commits 2 to 5 (Logic Manager Layer) starting 14 November 2026.
+# As such, I forked our team's project repo to my GitHub account to preserve my work as an artifact, since Ethan will be updating the Logic Manager architecture and committing the code himself.
+
 ## Problem
 University students often don't notice their stress building until it affects their studies, sleep or wellbeing, and many don't reach out for support early. Existing counselling services rely on students coming forward themselves.
 
