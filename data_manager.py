@@ -2,8 +2,6 @@
 
 Domain validation, privacy filtering, opt-in requirements, query and record
 lifecycle belong to DataManager. Concrete JSON I/O belongs to JSONStorage.
-Legacy function entry points at the end of this module remain as adapters for
-Phase 1 callers; production injects a DataManager into WebController.
 """
 
 from __future__ import annotations
@@ -19,6 +17,8 @@ from json_types import JSONObject
 from storage.json_storage import JSONStorage
 from storage.storage_backend import StorageBackend
 from storage.storage_error import StorageError
+from records.check_in_record import CheckInRecord
+from records.stress_history import StressHistory
 
 _DEFAULT_DATA_PATH = Path(__file__).resolve().parent / "data" / "student_records.json"
 
@@ -158,6 +158,28 @@ class DataManager(BaseManager):
         return {"ok": True, "records": rows, "error": None,
                 "path": self.__backend.location}
 
+    def history_for(self, student_id: str) -> StressHistory:
+        """That student's finished rows, oldest first. Pending rows are counted only.
+
+        The whole file is loaded and then filtered. This does not claim to
+        read one student from disk.
+        """
+        wanted = str(student_id or "").strip()
+        loaded = self.load_all_records()
+        finished: list[CheckInRecord] = []
+        pending = 0
+        for row in loaded.get("records") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("student_id") or "").strip() != wanted:
+                continue
+            record = CheckInRecord(row)
+            if str(row.get("status") or "").lower() == "pending" or record.score is None:
+                pending += 1
+            else:
+                finished.append(record)
+        return StressHistory(wanted, finished, pending)
+
     def save_record(self, record: dict[str, Any], *, opt_in: Any = False) -> dict[str, Any]:
         """Append only evaluated AI records after opt-in and validation."""
         if not self._is_opted_in(opt_in):
@@ -230,46 +252,3 @@ class DataManager(BaseManager):
                     continue
             results.append(record)
         return results
-
-
-# Compatibility facade for the initial functional API; it is NOT used by
-# application services or Flask routes. Legacy tests can still import it.
-def get_default_data_path() -> str:
-    return DataManager.get_default_data_path()
-
-
-def load_all_records(data_path: str | None = None) -> dict[str, Any]:
-    return DataManager(data_path).load_all_records()
-
-
-def save_record(record: dict[str, Any], data_path: str | None = None,
-                *, opt_in: Any = False) -> dict[str, Any]:
-    return DataManager(data_path).save_record(record, opt_in=opt_in)
-
-
-def save_pending_record(record: dict[str, Any], data_path: str | None = None,
-                        *, opt_in: Any = False) -> dict[str, Any]:
-    return DataManager(data_path).save_pending_record(record, opt_in=opt_in)
-
-
-def replace_pending_record(record_id: str, new_record: dict[str, Any],
-                           data_path: str | None = None, *, opt_in: Any = False) -> dict[str, Any]:
-    return DataManager(data_path).replace_pending_record(record_id, new_record, opt_in=opt_in)
-
-
-def filter_records(records: list[dict[str, Any]], **filters: Any) -> list[dict[str, Any]]:
-    return DataManager().filter_records(records, **filters)
-
-
-def save(record: dict[str, Any], data_path: str | None = None,
-         *, opt_in: Any = False) -> dict[str, Any]:
-    return DataManager(data_path).save(record, opt_in=opt_in)
-
-
-def load(data_path: str | None = None) -> list[dict[str, Any]]:
-    return DataManager(data_path).load()
-
-
-def query(filter_fn: Callable[[dict[str, Any]], Any],
-          data_path: str | None = None) -> list[dict[str, Any]]:
-    return DataManager(data_path).query(filter_fn)

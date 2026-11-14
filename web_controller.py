@@ -22,6 +22,7 @@ from ai_manager import AIManager
 from checkin_service import CheckinService
 from data_manager import DataManager, TIER_TO_CATEGORY
 from io_manager import IOManager
+from jobs.checkin_runner import CheckinRunner
 from logic_manager import LogicManager
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class WebController:
         self._pending: dict = {}
         self._submissions: dict = {}
         self._lock = RLock()
+        self._jobs = CheckinRunner(workers=2)
         self._admin_sessions: dict = {}
         self._login_attempts: dict = {}
         # Introspection and test injection; no private data enters cookies.
@@ -52,6 +54,7 @@ class WebController:
         app.extensions['logic_manager'] = self._logic
         app.extensions['data_manager'] = self._data
         app.extensions['checkin_service'] = self._service
+        app.extensions['checkin_runner'] = self._jobs
         app.extensions['web_controller'] = self
         self._register_routes()
 
@@ -85,6 +88,9 @@ class WebController:
             ('/result', 'result', self.result, ['GET']),
             ('/save', 'save_checkin', self.save_checkin, ['POST']),
             ('/new', 'new_checkin', self.new_checkin, ['GET']),
+            ('/history', 'student_history', self.student_history, ['GET']),
+            ('/api/history', 'student_history_api', self.student_history_api, ['GET']),
+            ('/checkin/status/<job_id>', 'checkin_status', self.checkin_status, ['GET']),
         )
         for path, endpoint, handler, methods in routes:
             self._app.add_url_rule(path, endpoint=endpoint,
@@ -161,7 +167,7 @@ class WebController:
     def render_campus(self, page='home'):
         session.setdefault('csrf_token', secrets.token_urlsafe(32))
         entry = self.current_entry()
-        return render_template('checkin.html', boot={'page': page, 'survey': self._io.survey.public_config(), 'isAdmin': self.is_admin(), 'adminLoginUrl': url_for('admin_login'), 'result': self._service.result_view(entry['record'], entry['saved']) if entry else None, 'csrfToken': session['csrf_token'], 'submitUrl': url_for('submit_checkin'), 'saveUrl': url_for('save_checkin'), 'newUrl': url_for('new_checkin'), 'homeUrl': url_for('checkin'), 'resultUrl': url_for('result'), 'recordsPageUrl': url_for('records_page'), 'recordsUrl': url_for('saved_records'), 'summaryUrl': url_for('records_summary')})
+        return render_template('checkin.html', boot={'page': page, 'survey': self._io.survey.public_config(), 'isAdmin': self.is_admin(), 'adminLoginUrl': url_for('admin_login'), 'result': self._service.result_view(entry['record'], entry['saved']) if entry else None, 'csrfToken': session['csrf_token'], 'submitUrl': url_for('submit_checkin'), 'saveUrl': url_for('save_checkin'), 'newUrl': url_for('new_checkin'), 'homeUrl': url_for('checkin'), 'resultUrl': url_for('result'), 'historyUrl': url_for('student_history'), 'recordsPageUrl': url_for('records_page'), 'recordsUrl': url_for('saved_records'), 'summaryUrl': url_for('records_summary')})
 
     def checkin(self):
         return self.render_campus()
@@ -217,11 +223,13 @@ class WebController:
             return (jsonify(errors=record, safety_flag=safety, advisor=self._io.format_speak_to_advisor_panel('high') if safety else None), 400)
         self.clear_pending()
         fingerprint = self._service.fingerprint(record)
-        try:
-            ok, outcome = self._service.process_checkin(record, ai=self._ai_for_request())
-        except Exception:
-            logger.warning('Check-in pipeline could not complete')
-            ok, outcome = (False, 'unavailable')
+        job_id = self._jobs.submit(
+            lambda record=record: self._service.process_checkin(record, ai=self._ai_for_request()))
+        job = self._jobs.wait(job_id)
+        if job["status"] != "done" or not isinstance(job.get("result"), tuple):
+            ok, outcome = False, "unavailable"
+        else:
+            ok, outcome = job["result"]
         if not ok:
             try:
                 with self._lock:
@@ -258,7 +266,7 @@ class WebController:
         with self._lock:
             self._pending[token] = {'record': outcome, 'saved': True, 'created': time.monotonic()}
         session['checkin_token'] = token
-        return jsonify(ok=True, result=self._service.result_view(outcome, saved=True))
+        return jsonify(ok=True, jobId=job_id, result=self._service.result_view(outcome, saved=True))
 
     def records_page(self):
         if not self.is_admin():
@@ -340,6 +348,32 @@ class WebController:
     def new_checkin(self):
         self.clear_pending()
         return redirect(url_for('checkin'))
+
+    def _own_student_id(self) -> str:
+        """The student id of the result held for this browser. Not stored in the cookie."""
+        entry = self.current_entry()
+        if not entry or not isinstance(entry.get("record"), dict):
+            return ""
+        return str(entry["record"].get("student_id") or "").strip()
+
+    def student_history(self):
+        """This browser's own scores, while its result is still held."""
+        if not self._own_student_id():
+            return redirect(url_for('checkin'))
+        return self.render_campus('history')
+
+    def student_history_api(self):
+        student_id = self._own_student_id()
+        if not student_id:
+            return jsonify(message='Complete a check-in in this browser to see your history.'), 401
+        return jsonify(self._service.student_history(student_id))
+
+    def checkin_status(self, job_id: str):
+        """Poll a background check-in. The result itself stays on the result page."""
+        found = self._jobs.status(job_id)
+        if found is None:
+            return jsonify(message='That check-in could not be found.'), 404
+        return jsonify(found)
 
     def oversized_request(self, error):
         return (jsonify(message='Your response is too long. Please shorten it and try again.'), 413)

@@ -469,27 +469,3 @@ class LogicManager(BaseManager):
             if key in record and not isinstance(record[key], list):
                 invalid.append(key)
         return missing, invalid
-
-
-# main.py and the older tests still call logic_manager.apply_logic(...).
-# These names are methods of one shared LogicManager. They are not a second
-# copy of the scoring rules.
-_default = LogicManager()
-
-apply_logic = _default.apply_logic
-evaluate = _default.evaluate
-score = _default.score
-route = _default.route
-score_answers = _default.score_answers
-scored_value = _default.scored_value
-sleep_hours_stress = _default.sleep_hours_stress
-category_for_score = _default.category_for_score
-needs_support_priority = _default.needs_support_priority
-risk_score_for = _default.risk_score_for
-scored_items = _default.scored_items
-verify_ai_scores = _default.verify_ai_scores
-scoring_instructions = _default.scoring_instructions
-context_flags = _default.context_flags
-factor_insights = _default.factor_insights
-analyse_trend = _default.analyse_trend
-_within_tolerance = _default.within_tolerance

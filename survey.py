@@ -74,21 +74,7 @@ SAFETY_PATTERNS = [r"\bsuicid(?:e|al)\b", r"\bself[ -]?harm(?:ing)?\b",
     r"\b(?:want|wish|going|plan|planning) to die\b", r"\b(?:cannot|can't|dont|don't) (?:go on|keep myself safe|want to live)\b",
     r"\bbetter off dead\b", r"\b(?:took|taken|take) an overdose\b"]
 
-# Backwards-compatible module facade. Production uses SurveyDefinition through
-# an injected IOManager, rather than calling these procedural entry points.
 from survey_definition import SurveyDefinition
 
 DEFAULT_SURVEY = SurveyDefinition(version=VERSION, questions=QUESTIONS,
                                   sections=SECTIONS, safety_patterns=SAFETY_PATTERNS)
-
-
-def safety_check(text):
-    return DEFAULT_SURVEY.safety_check(text)
-
-
-def validate_question(raw, q):
-    return DEFAULT_SURVEY.validate_question(raw, q)
-
-
-def public_config():
-    return DEFAULT_SURVEY.public_config()

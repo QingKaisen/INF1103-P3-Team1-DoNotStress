@@ -36,8 +36,6 @@ from typing import Any, Callable, Mapping, Sequence
 from ai.ai_failure import AIFailure
 from ai.ai_provider import AIProvider
 from ai.error_classifier import ErrorClassifier
-from ai.function_provider import FunctionProvider
-from ai.gemini_provider import GeminiProvider
 from ai.response_contract import (
     ANSWER_KEYS,
     default_response_contract,
@@ -209,13 +207,8 @@ MODEL_CHAIN = (
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
 )
-_DEFAULT_MODEL = MODEL_CHAIN[0]
-_FALLBACK_MODELS = MODEL_CHAIN[1:]
-# 0 = most repeatable replies for the same answers (brief C4).
-_DEFAULT_TEMPERATURE = 0.0
 _DEFAULT_MAX_ATTEMPTS = 3
 _DEFAULT_RETRY_DELAY_SEC = 0.5
-_DEFAULT_TIMEOUT_SEC = 30.0
 # One check-in must not spend more than this many Gemini calls (daily quota).
 MAX_TOTAL_CALLS = 4
 # Extra try on the same model, and only for a timeout or bad JSON.
@@ -242,25 +235,6 @@ AI_ERROR_CODES = (
     ERROR_CODE_RATE_LIMITED,
     ERROR_CODE_UNAVAILABLE,
 )
-
-_CLASSIFIER = ErrorClassifier()
-
-
-def classify_ai_error(exc_or_message: Any) -> str:
-    """Map an exception or message to one AIFailure code.
-
-    Dicts that already carry error_code are passed through. Everything
-    else is classified by ErrorClassifier, so the marker list lives in
-    one class.
-    """
-    if isinstance(exc_or_message, dict):
-        code = str(exc_or_message.get("error_code", "")).strip().lower()
-        if code in AI_ERROR_CODES:
-            return code
-        exc_or_message = exc_or_message.get("detail", "")
-    if not isinstance(exc_or_message, (BaseException, str)) and exc_or_message is not None:
-        exc_or_message = str(exc_or_message)
-    return _CLASSIFIER.classify(exc_or_message)
 
 
 def _structured_ai_error(error_code: str, detail: str) -> dict[str, str]:
@@ -300,27 +274,10 @@ def _final_ai_error(
     return _structured_ai_error(code, last_detail)
 
 
-def _redact_secret(text: str, secret: str) -> str:
-    """Remove an API key from text before it is logged or returned."""
-    if secret and secret in text:
-        return text.replace(secret, "[redacted]")
-    return text
-
-
 def _backoff_seconds(attempt: int, base_delay_sec: float) -> float:
     """Wait after a failed attempt. attempt is 1-based: 0.5s, 1s, 2s, ..."""
     base = max(0.0, float(base_delay_sec))
     return base * (2 ** max(0, attempt - 1))
-
-
-def _models_for_call(model_name: str) -> tuple[str, ...]:
-    """Preferred model first, then the fixed older models, with duplicates removed."""
-    primary = (model_name or _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
-    ordered = [primary]
-    for name in _FALLBACK_MODELS:
-        if name not in ordered:
-            ordered.append(name)
-    return tuple(ordered)
 
 
 def _tries_on_one_model(max_attempts: int) -> int:
@@ -370,50 +327,6 @@ def _format_question(question: Mapping[str, Any]) -> str:
     )
 
 
-def build_prompt(
-    student_dict: dict[str, Any],
-    questions: Sequence[Mapping[str, Any]] | None = None,
-    instructions: str | None = None,
-) -> str:
-    """Legacy prompt entry point; the actual builder is AIManager.build_prompt."""
-    return AIManager(GeminiProvider(api_key="")).build_prompt(
-        student_dict, questions=questions, instructions=instructions
-    )
-
-
-def validate_ai_response(payload: Any) -> tuple[bool, Any]:
-    """Legacy schema validator; calls the same OOP implementation."""
-    return AIManager(GeminiProvider(api_key="")).validate_response(payload)
-
-
-def parse_response(raw: Any) -> dict[str, Any] | None:
-    """Extract and parse the JSON object in a raw AI reply.
-
-    Tolerates code fences or text around the object. Returns the dict, or
-    None for empty, non-string or malformed input. Never raises.
-    """
-    if isinstance(raw, dict):
-        return raw
-    if not isinstance(raw, str):
-        return None
-    start, end = raw.find("{"), raw.rfind("}")
-    if start == -1 or end <= start:
-        return None
-    try:
-        data = json.loads(raw[start:end + 1])
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def validate_response(data: Any) -> tuple[bool, Any]:
-    """Check required keys, types and ranges. Thin wrapper around validate_ai_response.
-
-    Returns (True, normalised_dict) or (False, error_message). Never raises.
-    """
-    return validate_ai_response(data)
-
-
 def _run_check(
     verify_fn: Callable[[dict[str, Any], Mapping[str, Any]], str | None],
     ai_fields: dict[str, Any],
@@ -434,17 +347,6 @@ def _run_check(
 # risk_score is not included; Logic adds it after validation.
 _DEFAULT_CONTRACT = default_response_contract()
 RESPONSE_SCHEMA: dict[str, Any] = _DEFAULT_CONTRACT.schema()
-
-
-def _default_generate(prompt: str, api_key: str, model_name: str) -> str:
-    """Legacy single-call entry point; use the same GeminiProvider as AIManager.
-
-    Kept for existing integrations and tests. Production API traffic flows
-    through the injected AIProvider in AIManager.call_api().
-    """
-    return GeminiProvider(api_key=api_key, preferred_model=model_name).generate(
-        prompt, model_name, schema=RESPONSE_SCHEMA,
-    )
 
 
 class AIManager(BaseManager):
@@ -719,92 +621,3 @@ class AIManager(BaseManager):
         enriched["source"] = AI_SOURCE
         return True, enriched, None
 
-
-# Compatibility boundary for existing Phase 1 callers and tests. These
-# functions instantiate the OOP service: they contain no retry or API logic.
-# New code should instantiate AIManager with an AIProvider directly.
-
-
-def _legacy_manager(
-    *,
-    api_key: str | None = None,
-    model_name: str = _DEFAULT_MODEL,
-    max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
-    retry_delay_sec: float = _DEFAULT_RETRY_DELAY_SEC,
-    generate_fn: Callable[[str, str, str], str] | None = None,
-) -> AIManager:
-    key = (api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", "")).strip()
-    if generate_fn is None:
-        provider: AIProvider = GeminiProvider(api_key=key, preferred_model=model_name)
-    else:
-        provider = FunctionProvider(
-            generate_fn, key, models=_models_for_call(model_name)
-        )
-    return AIManager(
-        provider, max_attempts=max_attempts, retry_delay_sec=retry_delay_sec
-    )
-
-
-def call_gemini(
-    prompt: str,
-    *,
-    api_key: str | None = None,
-    model_name: str = _DEFAULT_MODEL,
-    max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
-    retry_delay_sec: float = _DEFAULT_RETRY_DELAY_SEC,
-    generate_fn: Callable[[str, str, str], str] | None = None,
-    answers: Mapping[str, Any] | None = None,
-    verify_fn: Callable[[dict[str, Any], Mapping[str, Any]], str | None] | None = None,
-) -> tuple[bool, dict[str, Any] | None, dict[str, str] | None]:
-    """Compatibility wrapper around the OOP AIManager and AIProvider."""
-    manager = _legacy_manager(
-        api_key=api_key,
-        model_name=model_name,
-        max_attempts=max_attempts,
-        retry_delay_sec=retry_delay_sec,
-        generate_fn=generate_fn,
-    )
-    return manager.call_api(prompt, answers=answers, verify_fn=verify_fn)
-
-
-def call_api(
-    prompt: str,
-    *,
-    generate_fn: Callable[[str, str, str], str] | None = None,
-    answers: Mapping[str, Any] | None = None,
-    verify_fn: Callable[[dict[str, Any], Mapping[str, Any]], str | None] | None = None,
-) -> tuple[bool, dict[str, Any] | None, dict[str, str] | None]:
-    """Send a prompt to the AI. Thin wrapper around call_gemini.
-
-    Connection errors and timeouts are caught and logged inside call_gemini;
-    this never raises. Returns (ok, validated_fields_or_None, error_or_None).
-    """
-    return call_gemini(prompt, generate_fn=generate_fn, answers=answers, verify_fn=verify_fn)
-
-
-def analyse_student(
-    student_dict: dict[str, Any],
-    *,
-    api_key: str | None = None,
-    model_name: str = _DEFAULT_MODEL,
-    max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
-    retry_delay_sec: float = _DEFAULT_RETRY_DELAY_SEC,
-    generate_fn: Callable[[str, str, str], str] | None = None,
-    questions: Sequence[Mapping[str, Any]] | None = None,
-    instructions: str | None = None,
-    verify_fn: Callable[[dict[str, Any], Mapping[str, Any]], str | None] | None = None,
-) -> tuple[bool, dict[str, Any] | None, dict[str, str] | None]:
-    """Legacy entry point; the actual AI workflow is AIManager.analyse_student."""
-    manager = _legacy_manager(
-        api_key=api_key,
-        model_name=model_name,
-        max_attempts=max_attempts,
-        retry_delay_sec=retry_delay_sec,
-        generate_fn=generate_fn,
-    )
-    return manager.analyse_student(
-        student_dict,
-        questions=questions,
-        instructions=instructions,
-        verify_fn=verify_fn,
-    )

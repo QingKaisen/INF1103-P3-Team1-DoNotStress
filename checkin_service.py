@@ -51,6 +51,21 @@ class CheckinService:
         """Browser cohort cards for the current filter. No student identifiers."""
         return self.__reporter.browser_summary(records)
 
+    def student_history(self, student_id: str) -> dict:
+        """Scores and the trend for one student. No reflection text."""
+        history = self.__data.history_for(student_id)
+        trend = self.__logic.analyse_trend(history)
+        return {
+            "count": history.count,
+            "pending_count": history.pending_count,
+            "scores": history.scores,
+            "comparison": trend.comparison,
+            "direction": trend.direction,
+            "latest": trend.latest,
+            "previous": trend.previous,
+            "change": trend.change,
+        }
+
     def fingerprint(self, record: dict) -> str:
         """Stable identity for same answers; free text is deliberately excluded."""
         answers = [record.get(question['key']) for question in self.__io.survey.questions]
